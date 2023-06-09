@@ -120,7 +120,20 @@ struct Control {
     return ss.str();
   }
   /** \brief all commands */
-  enum Command { EMPTY, TERMINATE, ADD_NODE, BARRIER, ACK, HEARTBEAT };
+  enum Command {
+    EMPTY, TERMINATE, ADD_NODE, BARRIER, ACK, HEARTBEAT,
+    ASK_LOCAL_AGGREGATION,
+    ASK_MODEL_RECEIVER,
+    ASK_MODEL_RECEIVER_REPLY,
+    ASK_LOCAL_AGGREGATION_REPLY,
+    MODEL_DISTRIBUTION_REPLY,
+    LOCAL_AGGREGATION,
+    ASK_AS_RECEIVER,
+    MODEL_DISTRIBUTION,
+    ASK_AS_RECEIVER_REPLY,
+    NOTICE_WORKER_ONE_ITERATION_FINISH,
+    INIT
+  };
   /** \brief the command */
   Command cmd;
   /** \brief node infos */
@@ -139,7 +152,9 @@ struct Meta {
   /** \brief default constructor */
   Meta() : head(kEmpty), app_id(kEmpty), customer_id(kEmpty),
            timestamp(kEmpty), sender(kEmpty), recver(kEmpty),
-           request(false), push(false), pull(false), simple_app(false) {}
+           request(false), push(false), pull(false), simple_app(false),
+           local_aggregation_receiver(kEmpty), model_receiver(kEmpty), last_receiver(kEmpty),
+           last_bandwidth(kEmpty), num_aggregation(kEmpty), version(kEmpty), key(kEmpty), ask_as_receiver_status(false) {}
   std::string DebugString() const {
     std::stringstream ss;
     if (sender == Node::kEmpty) {
@@ -197,6 +212,15 @@ struct Meta {
   int data_size = 0;
   /** \brief message priority */
   int priority = 0;
+
+  int local_aggregation_receiver;
+  int model_receiver;
+  int last_receiver;
+  int last_bandwidth;
+  int num_aggregation;
+  int version;
+  int key;
+  bool ask_as_receiver_status;
 };
 /**
  * \brief messages that communicated amaong nodes.

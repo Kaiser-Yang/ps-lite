@@ -54,6 +54,7 @@ void Customer::Receiving() {
         recv.meta.control.cmd == Control::TERMINATE) {
       break;
     }
+    if (recv.meta.control.cmd == Control::MODEL_DISTRIBUTION) { NewRequest(kServerGroup); }
     recv_handle_(recv);
     if (!recv.meta.request) {
       std::lock_guard<std::mutex> lk(tracker_mu_);
