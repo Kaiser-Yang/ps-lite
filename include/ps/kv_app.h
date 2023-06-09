@@ -3,12 +3,17 @@
  */
 #ifndef PS_KV_APP_H_
 #define PS_KV_APP_H_
+#include <string>
 #include <algorithm>
 #include <utility>
 #include <vector>
 #include <unordered_map>
 #include "ps/base.h"
 #include "ps/simple_app.h"
+#include "my_thread_pool.h"
+#include "mxnet/tensor_blob.h"
+#include "mxnet/base.h"
+
 namespace ps {
 
 /**
@@ -51,6 +56,9 @@ struct KVPairs {
  * \tparam Val the type of value, which should be primitive types such as
  * int32_t and float
  */
+
+struct KVMeta;
+
 template<typename Val>
 class KVWorker : public SimpleApp {
  public:
@@ -75,6 +83,7 @@ class KVWorker : public SimpleApp {
     using namespace std::placeholders;
     slicer_ = std::bind(&KVWorker<Val>::DefaultSlicer, this, _1, _2, _3);
     obj_ = new Customer(app_id, customer_id, std::bind(&KVWorker<Val>::Process, this, _1));
+    threadPool_.set_max_thread_num(1); // every time let one thread to distribute model
   }
 
   /** \brief deconstructor */
@@ -245,7 +254,9 @@ class KVWorker : public SimpleApp {
             const SArray<int>& lens = {},
             int cmd = 0,
             const Callback& cb = nullptr,
-            int priority = 0) {
+            int priority = 0,
+            bool isInit = false,
+            int key = 0) {
     int ts = obj_->NewRequest(kServerGroup);
     AddCallback(ts, cb);
     KVPairs<Val> kvs;
@@ -253,7 +264,35 @@ class KVWorker : public SimpleApp {
     kvs.vals = vals;
     kvs.lens = lens;
     kvs.priority = priority;
-    Send(ts, true, false, cmd, kvs);
+    // for init operation, we only need worker 0 to send data, so we'll use the original version.
+    if (!isInit && dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+      Meta meta;
+      meta.push = true;
+      meta.num_aggregation = 1;
+      meta.key = key;
+      // ZPush is Called by Engine::Get()->PushAsync(),
+      // so LocalAggregation must be Called in the Customer::recv_thread_.
+      // otherwise in LocalAggregation, it will call WaitToRead() and will form a deadlock,
+      // because now thread is blocked for WaitToRead() and WaitToRead() can not be started for now thread is not finished.
+      // therefore we need Send() and let recv_thread_ call LocalAggregation().
+      Message msg;
+      msg.meta.app_id = 0;
+      msg.meta.customer_id = 0;
+      msg.meta.push = true;
+      msg.meta.num_aggregation = 1;
+      msg.meta.key = key;
+      msg.meta.head = cmd;
+      msg.meta.control.cmd = Control::LOCAL_AGGREGATION;
+      msg.meta.timestamp = ts;
+      msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+      msg.meta.recver = Postoffice::Get()->van()->my_node().id;
+      msg.AddData(kvs.keys);
+      msg.AddData(kvs.vals);
+      msg.AddData(kvs.lens);
+      Postoffice::Get()->van()->Send(msg);
+    } else {
+      Send(ts, true, false, cmd, kvs, isInit, -1, key);
+    }
     return ts;
   }
 
@@ -323,6 +362,8 @@ class KVWorker : public SimpleApp {
     CHECK(slicer); slicer_ = slicer;
   }
 
+  void PullFromReceiveKvs(int key, SArray<Val>* vals, SArray<int> *lens, int cmd, const Callback& cb);
+
  private:
   /**
    * \brief internal pull, C/D can be either SArray or std::vector
@@ -353,13 +394,16 @@ class KVWorker : public SimpleApp {
    * @param push whether or not it is a pull request
    * @param cmd command
    */
-  void Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs);
+  void Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit = false, int receiver = -1, int key = 0);
   /** \brief internal receive handle */
   void Process(const Message& msg);
+  void LocalAggregation(const int cmd, const Meta& reqMeta, const KVPairs<Val>& reqData);
   /** \brief default kv slicer */
   void DefaultSlicer(const KVPairs<Val>& send,
                      const std::vector<Range>& ranges,
                      SlicedKVs* sliced);
+
+  void ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kvs);
 
   /** \brief data buffer for received kvs for each timestamp */
   std::unordered_map<int, std::vector<KVPairs<Val>>> recv_kvs_;
@@ -369,6 +413,38 @@ class KVWorker : public SimpleApp {
   std::mutex mu_;
   /** \brief kv list slicer */
   Slicer slicer_;
+
+
+  // struct UpdateBuf {
+  //   std::vector<KVMeta> request;
+  //   mxnet::NDArray merged;
+  //   // temp_array is used to cast received values as float32 for computation if required
+  //   mxnet::NDArray temp_array;
+  // };
+  int num_aggregation_ = 0;
+  std::condition_variable cv_;
+  std::unordered_map<int, KVPairs<Val>> receive_kvs_;
+  MyThreadPool threadPool_;
+  std::unordered_map<int, SArray<Val>> update_buf_;
+  enum class RequestType { kDefaultPushPull, kRowSparsePushPull, kCompressedPushPull };
+
+  struct DataHandleType {
+    RequestType requestType;
+    int dtype;
+  };
+
+  DataHandleType DepairDataHandleType(int cmd) {
+    int w = std::floor((std::sqrt(8 * cmd + 1) - 1) / 2);
+    int t = ((w * w) + w) / 2;
+    int y = cmd - t;
+    int x = w - y;
+    CHECK_GE(x, 0);
+    CHECK_GE(y, 0);
+    DataHandleType type;
+    type.requestType = static_cast<RequestType>(x);
+    type.dtype       = y;
+    return type;
+  }
 };
 
 /** \brief meta information about a kv request */
@@ -385,6 +461,10 @@ struct KVMeta {
   int timestamp;
   /** \brief the customer id of worker */
   int customer_id;
+
+  int control_cmd;
+  int num_aggregation;
+  int key;
 };
 
 /**
@@ -477,6 +557,9 @@ void KVServer<Val>::Process(const Message& msg) {
   meta.sender    = msg.meta.sender;
   meta.timestamp = msg.meta.timestamp;
   meta.customer_id = msg.meta.customer_id;
+  meta.control_cmd = msg.meta.control.cmd;
+  meta.num_aggregation = msg.meta.num_aggregation;
+  meta.key = msg.meta.key;
   KVPairs<Val> data;
   int n = msg.data.size();
   if (n) {
@@ -572,7 +655,7 @@ void KVWorker<Val>::DefaultSlicer(
 }
 
 template <typename Val>
-void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs) {
+void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit, int receiver, int key) {
   // slice the message
   SlicedKVs sliced;
   slicer_(kvs, Postoffice::Get()->GetServerKeyRanges(), &sliced);
@@ -588,7 +671,7 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
   }
 
   for (size_t i = 0; i < sliced.size(); ++i) {
-    const auto& s = sliced[i];
+    auto& s = sliced[i];
     if (!s.first) continue;
     Message msg;
     msg.meta.app_id = obj_->app_id();
@@ -600,7 +683,23 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
     msg.meta.timestamp   = timestamp;
     msg.meta.recver      = Postoffice::Get()->ServerRankToID(i);
     msg.meta.priority    = kvs.priority;
-    const auto& kvs = s.second;
+    auto& kvs = s.second;
+    if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+      msg.meta.key = key;
+      msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+      {
+        std::lock_guard<std::mutex> locker{mu_};
+        msg.meta.num_aggregation = num_aggregation_;
+      }
+      if (isInit && push) {
+        msg.meta.control.cmd = Control::INIT;
+      } else if (!isInit && push) {
+        msg.meta.control.cmd = Control::LOCAL_AGGREGATION;
+        msg.meta.recver = receiver;
+        std::lock_guard<std::mutex> locker{mu_};
+        kvs.vals.CopyFrom(update_buf_[key]);
+      }
+    }
     if (kvs.keys.size()) {
       msg.AddData(kvs.keys);
       msg.AddData(kvs.vals);
@@ -612,6 +711,27 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
   }
 }
 
+template <typename Val>
+void KVWorker<Val>::LocalAggregation(const int cmd, const Meta& reqMeta, const KVPairs<Val>& reqData) {
+  int key = reqMeta.key;
+  DataHandleType type = DepairDataHandleType(cmd);
+  CHECK_EQ(type.dtype, mshadow::kFloat32) << "LeMethod only supports for float32";
+  size_t size = reqData.lens[0] / mshadow::mshadow_sizeof(type.dtype);
+  std::lock_guard<std::mutex> locker{mu_};
+  auto& updates = update_buf_[key];
+  if (num_aggregation_ == 0) {
+    // This is zero data copy.
+    // Because, we just asign one pointer to another.
+    updates = reqData.vals;
+  } else {
+    Val* lhs = updates.data();
+    Val* rhs = reqData.vals.data();
+    for (size_t i = 0; i < size; i++) {
+      *((float*)lhs + i) += *((float*)rhs + i);
+    }
+  }
+  num_aggregation_ += reqMeta.num_aggregation;
+}
 
 template <typename Val>
 void KVWorker<Val>::Process(const Message& msg) {
@@ -632,12 +752,105 @@ void KVWorker<Val>::Process(const Message& msg) {
     recv_kvs_[ts].push_back(kvs);
     mu_.unlock();
   }
-
+  if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+    auto& ctrl = msg.meta.control;
+    if (ctrl.cmd == Control::LOCAL_AGGREGATION) {
+      KVPairs<Val> data;
+      CHECK_EQ(msg.data.size(), 3);
+      data.keys = msg.data[0];
+      data.vals = msg.data[1];
+      data.lens = msg.data[2];
+      LocalAggregation(msg.meta.head, msg.meta, data);
+      if (msg.meta.sender != msg.meta.recver) {
+        Postoffice::Get()->van()->DecreaseNumAsReceiver();
+        return;
+      }
+      // for self-sending msg, we need GetLocalAggregationReceiver
+      // and we need do this in another thread so that we can receive LOCAL_AGGREGATION from other workers to prevent from deadlock
+      // if we do this in current thread, deadlock will caused by WaitForLocalAggregationFinish()
+      // because current thread is blocked we can not receive, WaitForLocalAggregationFinish() will not end forever.
+      int cmd = msg.meta.head, key = msg.meta.key, ts = msg.meta.timestamp;
+      threadPool_.enqueue([this, ts, cmd, data, key] () {
+        int receiver = Postoffice::Get()->van()->GetLocalAggregationReceiver();
+        // std::cout << "LOCAL AGGREGATION sender: " << Postoffice::Get()->van()->my_node().id << " receiver: " << receiver << std::endl;
+        Postoffice::Get()->van()->WaitForLocalAggregationFinish();
+        Send(ts, true, false, cmd, data, false, receiver, key);
+        std::lock_guard<std::mutex> locker{mu_};
+        num_aggregation_ = 0;
+      });
+    } else if (ctrl.cmd == Control::MODEL_DISTRIBUTION) {
+      CHECK_EQ(msg.data.size(), (size_t)3);
+      KVPairs<Val> *kvs = new KVPairs<Val>();
+      kvs->keys = msg.data[0];
+      kvs->vals = msg.data[1];
+      kvs->lens = msg.data[2];
+      {
+        std::lock_guard<std::mutex> locker{mu_};
+        receive_kvs_[msg.meta.key] = *kvs;
+        cv_.notify_all();
+      }
+      threadPool_.enqueue(&KVWorker<Val>::ModelDistribution, this, msg.meta, kvs);
+    }
+  }
   // finished, run callbacks
   if (obj_->NumResponse(ts) == Postoffice::Get()->num_servers() - 1)  {
     RunCallback(ts);
   }
 }
+
+template <typename Val>
+void KVWorker<Val>::PullFromReceiveKvs(int key, SArray<Val> *vals, SArray<int> *lens, int cmd, const Callback& cb) {
+  std::unique_lock<std::mutex> locker{mu_};
+  cv_.wait(locker, [this, key]() { return receive_kvs_.count(key) != 0; });
+  auto &kvs = receive_kvs_[key];
+  Val *pVals = vals->data();
+  int *pLens = nullptr;
+  vals->resize(kvs.vals.size());
+  if (lens != nullptr) {
+    lens->resize(kvs.lens.size());
+    pLens = lens->data();
+  }
+  memcpy(pVals, kvs.vals.data(), kvs.vals.size() * sizeof(Val));
+  if (pLens != nullptr) { memcpy(pLens, kvs.lens.data(), kvs.lens.size() * sizeof(int)); }
+
+  receive_kvs_.erase(key);
+
+  if(cb != nullptr) { cb(); }
+}
+
+
+template <typename Val>
+void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kvs) {
+  int lastBandwidth = -1;
+  int lastReceiver = -1;
+  int receiver = -1;
+  Message msg;
+  msg.meta.app_id = 0;
+  msg.meta.customer_id = 0;
+  msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+  msg.meta.timestamp = reqMeta.timestamp;
+  msg.meta.control.cmd = Control::MODEL_DISTRIBUTION;
+  msg.meta.key = reqMeta.key;
+  msg.meta.version = reqMeta.version;
+  msg.AddData(kvs->keys);
+  msg.AddData(kvs->vals);
+  msg.AddData(kvs->lens);
+  delete kvs;
+  while (true) {
+    receiver = Postoffice::Get()->van()->GetModelReceiver(lastBandwidth, lastReceiver, reqMeta.version);
+    // std::cout << "MODEL DISTRIBUTION sender: " << msg.meta.sender << " receiver: " << receiver << std::endl;
+    if (receiver == -1) { break; }
+    msg.meta.recver = receiver;
+    clock_t startTime, endTime;
+    startTime = clock();
+    Postoffice::Get()->van()->Send(msg);
+    Postoffice::Get()->van()->WaitForModelDistributionReply();
+    endTime = clock();
+    lastBandwidth = (int)(startTime - endTime) / CLOCKS_PER_SEC;
+    lastReceiver = receiver;
+  }
+}
+
 template <typename Val>
 void KVWorker<Val>::RunCallback(int timestamp) {
   mu_.lock();
