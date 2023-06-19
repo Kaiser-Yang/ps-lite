@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <queue>
+#include <condition_variable>
 #include "ps/base.h"
 #include "ps/internal/message.h"
 #include "my_thread_pool.h"
@@ -103,6 +105,12 @@ class Van {
 
   void DecreaseNumAsReceiver();
 
+  void Wait_for_finished();
+
+  int GetReceiver(int throughput, int last_recv_id, int version);
+
+  void Ask1(int app, int customer1, int timestamp);
+
  protected:
   /**
    * \brief connect to a node
@@ -148,6 +156,15 @@ class Van {
   Node my_node_;
   bool is_scheduler_;
   std::mutex start_mu_;
+  std::mutex ask_mu;
+  std::mutex ver_mu;
+  std::condition_variable ask_cond;
+  std::condition_variable ver_cond;
+  std::mutex sched;
+  std::mutex sched1;
+  int receiver_ = -2;
+  bool ver_flag = false;
+  double max_greed_rate;
 
  private:
   /** thread function for receving */
@@ -207,6 +224,13 @@ class Van {
   int model_receiver_ = -2;
   int ask_as_receiver_status_ = false;
 
+  std::vector<std::vector<int>> A;
+  std::vector<int> B;
+  std::vector<int> B1;
+  std::queue<int> ask_q;
+  std::vector<std::vector<int>> lifetime;
+  int iters=-1;
+
   bool WaitForAskAsReceiverReply(int nodeID);
 
   bool CanToFloat(const char *str);
@@ -258,6 +282,17 @@ class Van {
   void CheckModelDistributionFinish();
 
   void CheckModelAggregationFinish();
+
+  void Ask(int throughput, int last_recv_id, int version);
+
+  void ProcessAutopullrpy();
+
+  void ProcessAskCommand(Message* msg);
+
+  void ProcessAsk1Command(Message* msg);
+
+  void ProcessReplyCommand(Message* reply);
+
 
   /**
    * \brief processing logic of AddNode message for scheduler
