@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 #include <unordered_map>
+#include <ctime>
+#include <thread>
 #include "ps/base.h"
 #include "ps/simple_app.h"
 #include "my_thread_pool.h"
@@ -57,7 +59,28 @@ struct KVPairs {
  * int32_t and float
  */
 
-struct KVMeta;
+/** \brief meta information about a kv request */
+struct KVMeta {
+  /** \brief the int cmd */
+  int cmd;
+  /** \brief whether or not this is a push request */
+  bool push;
+  /** \brief whether or not this is a pull request */
+  bool pull;
+  /** \brief sender's node id */
+  int sender;
+  /** \brief the associated timestamp */
+  int timestamp;
+  /** \brief the customer id of worker */
+  int customer_id;
+
+  int control_cmd;
+  int num_aggregation;
+  int key;
+  int version;
+  int num_merge;
+  int app_id;
+};
 
 template<typename Val>
 class KVWorker : public SimpleApp {
@@ -72,6 +95,13 @@ class KVWorker : public SimpleApp {
    * servers' data structure or the kv pairs have already pulled back.
    */
   using Callback = std::function<void()>;
+  using ReqHandle = std::function<void(const KVMeta& req_meta,
+                                       const KVPairs<Val>& req_data,
+                                       KVWorker* server)>;
+  void set_request_handle(const ReqHandle& request_handle) {
+    CHECK(request_handle) << "invalid request handle";
+    request_handle_ = request_handle;
+  }
 
   /**
    * \brief constructor
@@ -125,10 +155,12 @@ class KVWorker : public SimpleApp {
            const std::vector<int>& lens = {},
            int cmd = 0,
            const Callback& cb = nullptr,
-           int priority = 0) {
+           int priority = 0,
+           int uniq_key=0,
+           int key_version=0) {
     return ZPush(
         SArray<Key>(keys), SArray<Val>(vals), SArray<int>(lens), cmd, cb,
-        priority);
+        priority, false, 0, uniq_key, key_version);
   }
 
   /**
@@ -256,7 +288,9 @@ class KVWorker : public SimpleApp {
             const Callback& cb = nullptr,
             int priority = 0,
             bool isInit = false,
-            int key = 0) {
+            int key = 0,
+            int uniq_key = 0,
+            int version = 0) {
     int ts = obj_->NewRequest(kServerGroup);
     AddCallback(ts, cb);
     KVPairs<Val> kvs;
@@ -290,6 +324,19 @@ class KVWorker : public SimpleApp {
       msg.AddData(kvs.vals);
       msg.AddData(kvs.lens);
       Postoffice::Get()->van()->Send(msg);
+    } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+      KVMeta meta;
+      meta.cmd       = cmd;
+      meta.push      = true;
+      meta.sender    = Postoffice::Get()->van()->my_node().id;
+      meta.timestamp = ts;
+      meta.app_id = obj_->app_id();
+      meta.customer_id = obj_->customer_id();
+      meta.key = uniq_key;
+      meta.version = version;
+      meta.num_merge = 1;
+      request_handle_(meta,kvs,this);
+      Postoffice::Get()->van()->Ask1(meta.app_id , meta.customer_id, ts);
     } else {
       Send(ts, true, false, cmd, kvs, isInit, -1, key);
     }
@@ -364,6 +411,17 @@ class KVWorker : public SimpleApp {
 
   void PullFromReceiveKvs(int key, SArray<Val>* vals, SArray<int> *lens, int cmd, const Callback& cb);
 
+  int AutoPull(int uniq_key,
+               const SArray <Key> &keys,
+               SArray <Val> *vals,
+               SArray<int> *lens = nullptr,
+               int cmd = 0);
+
+  void Response(const KVMeta& req);
+
+  void Send2(int timestamp, bool push, int cmd, const KVPairs<Val>& kvs, int uniq_key,
+             int key_version, int app, int customer, int merge);
+
  private:
   /**
    * \brief internal pull, C/D can be either SArray or std::vector
@@ -394,7 +452,7 @@ class KVWorker : public SimpleApp {
    * @param push whether or not it is a pull request
    * @param cmd command
    */
-  void Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit = false, int receiver = -1, int key = 0);
+  void Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit = false, int receiver = -1, int key = 0, int uniq_key = 0, int key_version = 0);
   /** \brief internal receive handle */
   void Process(const Message& msg);
   void LocalAggregation(const int cmd, const Meta& reqMeta, const KVPairs<Val>& reqData);
@@ -404,6 +462,18 @@ class KVWorker : public SimpleApp {
                      SlicedKVs* sliced);
 
   void ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kvs);
+
+  void AutoPullRpy(const int sender);
+
+  void AutoPullUpdate(const int version,const int iters, const int req, const KVPairs<Val>& kvs);
+
+  std::unordered_map<int, std::unordered_map<Key, KVPairs<Val>>> auto_pull_kvs_;
+  std::unordered_map<int, int> data_version_;
+  std::condition_variable cond_;
+  int memo = -1;
+  MyThreadPool pool;
+  int send_push = 0;
+  ReqHandle request_handle_;
 
   /** \brief data buffer for received kvs for each timestamp */
   std::unordered_map<int, std::vector<KVPairs<Val>>> recv_kvs_;
@@ -447,26 +517,6 @@ class KVWorker : public SimpleApp {
   }
 };
 
-/** \brief meta information about a kv request */
-struct KVMeta {
-  /** \brief the int cmd */
-  int cmd;
-  /** \brief whether or not this is a push request */
-  bool push;
-  /** \brief whether or not this is a pull request */
-  bool pull;
-  /** \brief sender's node id */
-  int sender;
-  /** \brief the associated timestamp */
-  int timestamp;
-  /** \brief the customer id of worker */
-  int customer_id;
-
-  int control_cmd;
-  int num_aggregation;
-  int key;
-};
-
 /**
  * \brief A server node for maintaining key-value pairs
  */
@@ -506,11 +556,51 @@ class KVServer : public SimpleApp {
    */
   void Response(const KVMeta& req, const KVPairs<Val>& res = KVPairs<Val>());
 
+  void AutoPullUpdate(const int version, const KVMeta& req, const KVPairs<Val>& kvs = KVPairs<Val>()) {
+    iter++;
+    int throughput = -1;
+    int last_recv_id = -1;
+    while (true) {
+      int receiver = Postoffice::Get()->van()->GetReceiver(throughput, last_recv_id, iter);
+      if (receiver == -1) { break; }
+      if (kvs.keys.size()) {
+        Message msg;
+        msg.meta.app_id = obj_->app_id();
+        msg.meta.customer_id = obj_->customer_id();
+        msg.meta.request = true;
+        msg.meta.push = false;
+        msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+        msg.meta.recver = receiver;
+        msg.meta.key = req.key;
+        msg.meta.version = version;
+        msg.meta.iters = iter;
+        msg.meta.timestamp = -1;
+        msg.AddData(kvs.keys);
+        msg.AddData(kvs.vals);
+        if (kvs.lens.size()) {
+          msg.AddData(kvs.lens);
+        }
+        clock_t starts, ends;
+        starts = clock();
+        Postoffice::Get()->van()->Send(msg);
+        Postoffice::Get()->van()->Wait_for_finished();
+        ends = clock();
+        // this is obvious a but, because when it takes more than 1 sec, the throughput will be 0.
+        // in order to solve the bug, I use 1000 as the divided number rather than 1.
+        // although the result may overflow in some case
+        // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
+        throughput = (int) (1000/((double)(ends - starts) / CLOCKS_PER_SEC));
+        last_recv_id = receiver;
+      }
+    }
+  }
+
  private:
   /** \brief internal receive handle */
   void Process(const Message& msg);
   /** \brief request handle */
   ReqHandle request_handle_;
+  int iter = -1;
 };
 
 
@@ -560,6 +650,8 @@ void KVServer<Val>::Process(const Message& msg) {
   meta.control_cmd = msg.meta.control.cmd;
   meta.num_aggregation = msg.meta.num_aggregation;
   meta.key = msg.meta.key;
+  meta.version = msg.meta.version;
+  meta.num_merge = msg.meta.iters;
   KVPairs<Val> data;
   int n = msg.data.size();
   if (n) {
@@ -574,6 +666,9 @@ void KVServer<Val>::Process(const Message& msg) {
   }
   CHECK(request_handle_);
   request_handle_(meta, data, this);
+  if(dmlc::GetEnv("ENABLE_TSENGINE", false) && msg.meta.push){
+    Postoffice::Get()->van()->Ask1( msg.meta.app_id , msg.meta.customer_id, msg.meta.timestamp);
+  }
 }
 
 template <typename Val>
@@ -587,6 +682,8 @@ void KVServer<Val>::Response(const KVMeta& req, const KVPairs<Val>& res) {
   msg.meta.head        = req.cmd;
   msg.meta.timestamp   = req.timestamp;
   msg.meta.recver      = req.sender;
+  msg.meta.key         = req.key;
+  msg.meta.version     = req.version;
   if (res.keys.size()) {
     msg.AddData(res.keys);
     msg.AddData(res.vals);
@@ -655,7 +752,7 @@ void KVWorker<Val>::DefaultSlicer(
 }
 
 template <typename Val>
-void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit, int receiver, int key) {
+void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit, int receiver, int key, int uniq_key, int key_version) {
   // slice the message
   SlicedKVs sliced;
   slicer_(kvs, Postoffice::Get()->GetServerKeyRanges(), &sliced);
@@ -699,6 +796,9 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
         std::lock_guard<std::mutex> locker{mu_};
         kvs.vals.CopyFrom(update_buf_[key]);
       }
+    } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+      msg.meta.key = uniq_key;
+      msg.meta.version = key_version;
     }
     if (kvs.keys.size()) {
       msg.AddData(kvs.keys);
@@ -709,6 +809,109 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
     }
     Postoffice::Get()->van()->Send(msg);
   }
+}
+
+template <typename Val>
+void KVWorker<Val>::Send2(int timestamp, bool push, int cmd,
+                          const KVPairs<Val>& kvs, int uniq_key,
+                          int key_version,int app, int customer, int merge) {
+  // slice the message
+  SlicedKVs sliced;
+  slicer_(kvs, Postoffice::Get()->GetServerKeyRanges(), &sliced);
+  // need to add response first, since it will not always trigger the callback
+  int skipped = 0;
+  for (size_t i = 0; i < sliced.size(); ++i) {
+    if (!sliced[i].first) ++skipped;
+  }
+  obj_->AddResponse(timestamp, skipped);
+  if ((size_t) skipped == sliced.size()) {
+    RunCallback(timestamp);
+  }
+  for (size_t i = 0; i < sliced.size(); ++i) {
+    const auto &s = sliced[i];
+    if (!s.first) continue;
+    Message msg;
+    msg.meta.app_id = app;
+    msg.meta.customer_id = customer;
+    msg.meta.request = true;
+    msg.meta.push = push;
+    msg.meta.head = cmd;
+    msg.meta.timestamp = timestamp;
+    msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+    msg.meta.iters = merge;
+    msg.meta.recver = send_push;
+    msg.meta.key = uniq_key;
+    msg.meta.version = key_version;
+    const auto &kvs = s.second;
+    if (kvs.keys.size()) {
+      msg.AddData(kvs.keys);
+      msg.AddData(kvs.vals);
+      if (kvs.lens.size()) {
+        msg.AddData(kvs.lens);
+      }
+    }
+    Postoffice::Get()->van()->Send(msg);
+    send_push = 0;
+  }
+}
+
+template <typename Val>
+void KVWorker<Val>::AutoPullRpy(const int sender){
+  Message rpy;
+  rpy.meta.recver = sender;
+  rpy.meta.control.cmd = Control::AUTOPULLRPY;
+  Postoffice::Get()->van()->Send(rpy);
+}
+
+template <typename Val>
+void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
+                                   const int req, const KVPairs<Val>& kvs ) {
+  int throughput = -1;
+  int last_recv_id = -1;
+  while (true) {
+    int receiver=Postoffice::Get()->van()->GetReceiver(throughput, last_recv_id,iters);
+    if (receiver == -1) break;    //whether transmition is over
+    if (kvs.keys.size()) {
+      Message msg;
+      msg.meta.app_id = obj_->app_id();
+      msg.meta.customer_id = obj_->customer_id();
+      msg.meta.request = true;
+      msg.meta.push = false;
+      msg.meta.sender = Postoffice::Get()->van()->my_node().id;
+      msg.meta.recver = receiver;
+      msg.meta.key = req;
+      msg.meta.version = version;
+      msg.meta.iters = iters;
+      msg.meta.timestamp = -1;
+      msg.AddData(kvs.keys);
+      msg.AddData(kvs.vals);
+      if (kvs.lens.size()) {
+          msg.AddData(kvs.lens);
+      }
+      clock_t starts, ends;
+      starts = clock();
+      Postoffice::Get()->van()->Send(msg);
+      Postoffice::Get()->van()->Wait_for_finished();
+      ends = clock();
+      throughput = (int) (1000/((double)(ends - starts) / CLOCKS_PER_SEC));
+      last_recv_id = receiver;
+    }
+  }
+}
+
+template <typename Val>
+void KVWorker<Val>::Response(const KVMeta& req) {
+  Message msg;
+  msg.meta.app_id = obj_->app_id();
+  msg.meta.customer_id = req.customer_id;
+  msg.meta.request     = false;
+  msg.meta.push        = req.push;
+  msg.meta.head        = req.cmd;
+  msg.meta.timestamp   = req.timestamp;
+  msg.meta.recver      = req.sender;
+  msg.meta.key         = req.key;
+  msg.meta.version     = req.version;
+  Postoffice::Get()->van()->Send(msg);
 }
 
 template <typename Val>
@@ -791,6 +994,69 @@ void KVWorker<Val>::Process(const Message& msg) {
       }
       threadPool_.enqueue(&KVWorker<Val>::ModelDistribution, this, msg.meta, kvs);
     }
+  } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+    int key = msg.meta.key;
+    int version = msg.meta.version;
+    if (msg.data.size()) {
+      if (msg.meta.push && msg.meta.request) {//intercept push request msg from other workers, transmit it to workersmerge in kvstore_dist.h, and send a ask1 msg to continue
+        KVMeta meta;
+        meta.cmd       = msg.meta.head;
+        meta.push      = msg.meta.push;
+        meta.sender    = msg.meta.sender;
+        meta.timestamp = msg.meta.timestamp;
+        meta.customer_id = msg.meta.customer_id;
+        meta.key = msg.meta.key;
+        meta.version = msg.meta.version;
+        meta.num_merge = msg.meta.iters;
+
+        KVPairs<Val> kvs;
+        kvs.keys = msg.data[0];
+        kvs.vals = msg.data[1];
+        kvs.lens = msg.data[2];
+
+        request_handle_(meta,kvs,this);
+        Postoffice::Get()->van()->Ask1(msg.meta.app_id,msg.meta.customer_id,msg.meta.timestamp);
+      } else{
+        CHECK_GE(msg.data.size(), (size_t)2);
+        KVPairs<Val> kvs;
+        kvs.keys = msg.data[0];
+        kvs.vals = msg.data[1];
+        if (msg.data.size() > (size_t)2) {
+          kvs.lens = msg.data[2];
+          CHECK_EQ(kvs.keys.size(), kvs.lens.size());
+        }
+        if (msg.meta.request) {//autopull msg
+          AutoPullRpy(msg.meta.sender);  //added by huaman, send autopull reply msg
+          CHECK_EQ(kvs.keys.size(), (size_t)1);
+          pool.enqueue(&KVWorker<Val>::AutoPullUpdate, this, version, msg.meta.iters, key, kvs);//opt worker pull propagation by a separate thread
+          mu_.lock();
+          if (data_version_.find(key) == data_version_.end() || version == data_version_[key]) {
+            auto_pull_kvs_[key][kvs.keys[0]]=kvs;
+            data_version_[key] = version;
+          } else if (version > data_version_[key]) {
+            data_version_[key] = version;
+            auto_pull_kvs_.erase(key);
+            auto_pull_kvs_[key][kvs.keys[0]] = kvs;
+          }
+          mu_.unlock();
+          cond_.notify_all();
+        } else {
+          mu_.lock();
+          recv_kvs_[ts].push_back(kvs);
+          mu_.unlock();
+        }
+      }
+    } else {
+      if(msg.meta.push && msg.meta.request){//it's time to send this worker's push request msg
+        send_push = msg.meta.iters;
+        KVMeta meta;
+        meta.num_merge = -1;//just as a opt flag
+        KVPairs<char> kvs;
+        request_handle_(meta,kvs,this);
+      }
+    }
+
+    if (ts == -1 || msg.meta.request) { return; }
   }
   // finished, run callbacks
   if (obj_->NumResponse(ts) == Postoffice::Get()->num_servers() - 1)  {
@@ -849,6 +1115,47 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
     lastBandwidth = (int)(startTime - endTime) / CLOCKS_PER_SEC;
     lastReceiver = receiver;
   }
+}
+
+template <typename Val>
+int KVWorker<Val>::AutoPull(int uniq_key, const SArray <Key> &keys, SArray<Val> *vals, SArray<int> *lens, int cmd) {
+  std::unique_lock<std::mutex> lk(mu_);
+  while(auto_pull_kvs_[uniq_key].size() != keys.size()){
+    cond_.wait(lk);
+  }
+  auto& autokvs = auto_pull_kvs_[uniq_key];
+  Val* p_vals = vals->data();
+  int* p_lens = nullptr;
+  size_t total_vals = 0;
+  for (auto& kvs : autokvs) {
+    total_vals += kvs.second.vals.size();
+  }
+  CHECK_NOTNULL(vals);
+  if (vals->empty()) {
+    vals->resize(total_vals);
+  } else {
+    CHECK_EQ(vals->size(), total_vals);
+  }
+  if (lens) {
+    if (lens->empty()) {
+      lens->resize(keys.size());
+    } else {
+      CHECK_EQ(lens->size(), keys.size());
+    }
+    p_lens = lens->data();
+  }
+  for (unsigned long key : keys){
+    memcpy(p_vals, autokvs[key].vals.data(), autokvs[key].vals.size() * sizeof(Val));
+    p_vals += autokvs[key].vals.size();
+    if (p_lens) {
+      memcpy(p_lens, autokvs[key].lens.data(), autokvs[key].lens.size() * sizeof(int));
+      p_lens += autokvs[key].lens.size();
+    }
+  }
+  auto_pull_kvs_.erase(uniq_key);
+
+  // this data_version_ is not the same with the data_version_ of kvstore_dist.h, they belongs to different classes.
+  return data_version_[uniq_key];
 }
 
 template <typename Val>

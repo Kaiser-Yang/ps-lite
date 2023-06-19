@@ -275,36 +275,67 @@ void Van::Start(int customer_id) {
     // get my node info
     if (is_scheduler_) {
       my_node_ = scheduler_;
-      const char *greedRateStr = Environment::Get()->find("GREED_RATE");
-      CHECK(greedRateStr == nullptr || CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
-      if (greedRateStr == nullptr) { greed_rate_ = DEFAULT_GREED_RATE; }
-      else { greed_rate_ = atof(greedRateStr); }
-      CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
-      const char *maxThreadNumStr = Environment::Get()->find("MAX_THREAD_NUM");
-      CHECK(maxThreadNumStr == nullptr || CanToInteger(maxThreadNumStr)) << "failed to convert MAX_THREAD_NUM to integer";
-      if (maxThreadNumStr == nullptr) { max_thread_num_ = DEFAULT_MAX_THREAD_NUM; }
-      else { max_thread_num_ = atoi(maxThreadNumStr); }
-      CHECK(max_thread_num_ > 0 && max_thread_num_ < std::numeric_limits<int>::max())
-        << "MAX_THREAD_NUM must be in (0, "
-        << std::numeric_limits<int>::max() << ")";
-      threadPool_.set_max_thread_num(max_thread_num_);
-      for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
-        unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
-        unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
+      const char *enableTsengineVal = Environment::Get()->find("ENABLE_TSENGINE");
+      const char *enableLemethodVal = Environment::Get()->find("ENABLE_LEMETHOD");
+      bool enableTsengine = false;
+      bool enableLemethod = false;
+      if (enableTsengineVal != nullptr) {
+        CHECK(CanToInteger(enableTsengineVal)) << "failed to convert ENABLE_TSENGINE to integer.";
+        enableTsengine = (bool)atoi(enableTsengineVal);
       }
-      unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
-      unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
-      int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
-      for (int i = 0; i < maxNodeID; i++) {
-        bandwidth_.push_back(std::vector<int>(maxNodeID, 0));
-        lifetime_.push_back(std::vector<int>(maxNodeID, -1));
-        edge_weight_ma_.push_back(std::vector<int>(maxNodeID, -INF));
-        edge_weight_md_.push_back(std::vector<int>(maxNodeID, -INF));
+      if (enableLemethodVal != nullptr) {
+        CHECK(CanToInteger(enableLemethodVal)) << "failed to convert ENABLE_LEMETHOD to integer.";
+        enableLemethod = (bool)atoi(enableLemethodVal);
       }
-      receiver_ma_.resize(maxNodeID, UNKNOWN);
-      receiver_md_.resize(maxNodeID, UNKNOWN);
-      sender_ma_.resize(maxNodeID, UNKNOWN);
-      sender_md_.resize(maxNodeID, UNKNOWN);
+      CHECK(!(enableTsengine && enableLemethod)) << "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
+      if (enableTsengine) {
+        max_greed_rate= atof(Environment::Get()->find("GREED_RATE"));
+        int num_servers = Postoffice::Get()->num_servers();
+        int num_workers = Postoffice::Get()->num_workers();
+        int num_max = num_servers > num_workers ? num_servers : num_workers;
+        int num_node_id = 2 * num_max + 8;
+        std::vector<int> temp(num_node_id, -1);
+        for (int i = 0; i < num_node_id; i++) {
+          A.push_back(temp);
+          lifetime.push_back(temp);
+        }
+        for (int i = 0; i < num_node_id; i++) {
+          B.push_back(0);
+          B1.push_back(0);
+        }
+        ask_q.push(8);
+      } else if (enableLemethod) {
+        const char *greedRateStr = Environment::Get()->find("GREED_RATE");
+        CHECK(greedRateStr == nullptr || CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
+        if (greedRateStr == nullptr) { greed_rate_ = DEFAULT_GREED_RATE; }
+        else { greed_rate_ = atof(greedRateStr); }
+        CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
+        const char *maxThreadNumStr = Environment::Get()->find("MAX_THREAD_NUM");
+        CHECK(maxThreadNumStr == nullptr || CanToInteger(maxThreadNumStr)) << "failed to convert MAX_THREAD_NUM to integer";
+        if (maxThreadNumStr == nullptr) { max_thread_num_ = DEFAULT_MAX_THREAD_NUM; }
+        else { max_thread_num_ = atoi(maxThreadNumStr); }
+        CHECK(max_thread_num_ > 0 && max_thread_num_ < std::numeric_limits<int>::max())
+          << "MAX_THREAD_NUM must be in (0, "
+          << std::numeric_limits<int>::max() << ")";
+        threadPool_.set_max_thread_num(max_thread_num_);
+        for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
+          unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
+          unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
+        }
+        unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
+        unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
+        int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
+        for (int i = 0; i < maxNodeID; i++) {
+          bandwidth_.push_back(std::vector<int>(maxNodeID, 0));
+          lifetime_.push_back(std::vector<int>(maxNodeID, -1));
+          edge_weight_ma_.push_back(std::vector<int>(maxNodeID, -INF));
+          edge_weight_md_.push_back(std::vector<int>(maxNodeID, -INF));
+        }
+        receiver_ma_.resize(maxNodeID, UNKNOWN);
+        receiver_md_.resize(maxNodeID, UNKNOWN);
+        sender_ma_.resize(maxNodeID, UNKNOWN);
+        sender_md_.resize(maxNodeID, UNKNOWN);
+      }
     } else {
       auto role = Postoffice::Get()->is_worker() ? Node::WORKER : Node::SERVER;
       const char* nhost = Environment::Get()->find("DMLC_NODE_HOST");
@@ -485,6 +516,14 @@ void Van::Receiving() {
         ProcessInit(&msg);
       } else if (ctrl.cmd == Control::NOTICE_WORKER_ONE_ITERATION_FINISH) {
         ProcessNoticeWorkersOneIterationFinish(&msg);
+      } else if (ctrl.cmd == Control::AUTOPULLRPY) {
+        ProcessAutopullrpy();
+      } else if (ctrl.cmd == Control::ASK) {
+        ProcessAskCommand(&msg);
+      } else if (ctrl.cmd == Control::ASK1) {
+        ProcessAsk1Command(&msg);
+      } else if (ctrl.cmd == Control::REPLY) {
+        ProcessReplyCommand(&msg);
       } else {
         LOG(WARNING) << "Drop unknown typed message " << msg.DebugString();
       }
@@ -492,6 +531,206 @@ void Van::Receiving() {
       ProcessDataMsg(&msg);
     }
   }
+}
+
+void Van::Wait_for_finished() {
+  std::unique_lock<std::mutex> ver_lk(ver_mu);
+  while (!ver_flag) {
+    ver_cond.wait(ver_lk);
+  }
+  ver_flag = false;
+  ver_lk.unlock();
+}
+
+void Van::ProcessAutopullrpy() {
+  std::unique_lock<std::mutex> ver_lk(ver_mu);
+  ver_flag = true;
+  ver_lk.unlock();
+  ver_cond.notify_one();
+}
+
+void Van::Ask(int throughput, int last_recv_id, int version) {
+  Message msg;
+  msg.meta.customer_id = last_recv_id;//last receiver id
+  msg.meta.app_id = throughput;
+  msg.meta.sender = my_node_.id;
+  msg.meta.recver = kScheduler;
+  msg.meta.control.cmd = Control::ASK;
+  msg.meta.version = version;
+  msg.meta.timestamp = timestamp_++;
+  Send(msg);
+}
+
+void Van::Ask1(int app, int customer, int timestamp){
+  Message msg;
+  msg.meta.sender = my_node_.id;
+  msg.meta.recver = kScheduler;
+  msg.meta.control.cmd = Control::ASK1;
+  msg.meta.timestamp = timestamp;
+  msg.meta.app_id = app;
+  msg.meta.customer_id = customer;
+  Send(msg);
+}
+
+void Van::ProcessAsk1Command(Message* msg){
+  Message rpl;
+  rpl.meta.sender = my_node_.id;
+  rpl.meta.app_id = msg->meta.app_id;
+  rpl.meta.customer_id = msg->meta.customer_id;
+  rpl.meta.timestamp = msg->meta.timestamp;
+  rpl.meta.push = true;
+  rpl.meta.request = true;
+  std::unique_lock<std::mutex> lk_sch1(sched1);
+  ask_q.push(msg->meta.sender);
+  if (ask_q.size() > 1) {
+    int node_a = ask_q.front();
+    ask_q.pop();
+    int node_b = ask_q.front();
+    ask_q.pop();
+    if (node_a == 8 ||node_b == 8) {
+      if (node_a == 8) {
+        rpl.meta.iters = node_a;
+        rpl.meta.recver = node_b;
+        B1[node_b] = 1;
+        Send(rpl);
+      }else{
+        rpl.meta.iters = node_b;
+        rpl.meta.recver = node_a;
+        B1[node_a] = 1;
+        Send(rpl);
+      }
+    } else {
+      if ( A[node_a][node_b] > A[node_b][node_a]) {
+          rpl.meta.iters = node_b;
+          rpl.meta.recver = node_a;
+          Send(rpl);
+          B1[node_a] = 1;
+      } else {
+          rpl.meta.iters = node_a;
+          rpl.meta.recver = node_b;
+          Send(rpl);
+          B1[node_b] = 1;
+      }
+    }
+  }
+
+  int count = 0;
+  for (auto it : B1) { count += it; }
+  if (count == Postoffice::Get()->num_workers()) {
+    for (std::size_t i = 0; i < B1.size(); i++) B1[i] = 0;
+  }
+
+  lk_sch1.unlock();
+}
+
+void Van::ProcessAskCommand(Message* msg) {
+  std::unique_lock<std::mutex> lks(sched);
+  int req_node_id = msg->meta.sender;
+  if (msg->meta.app_id != -1) {//isn't the first ask
+    A[req_node_id][msg->meta.customer_id] = msg->meta.app_id;
+    lifetime[req_node_id][msg->meta.customer_id] = msg->meta.version;
+  }
+  //create reply message
+  Message rpl;
+  rpl.meta.sender = my_node_.id;
+  rpl.meta.recver = req_node_id;
+  rpl.meta.control.cmd = Control::REPLY;
+  rpl.meta.timestamp = timestamp_++;
+
+  int temp = 0;
+  for (std::size_t i = 0; i < B.size(); i++) temp += B[i];
+
+  if (temp == Postoffice::Get()->num_workers()) {
+    for (std::size_t i = 0; i < B.size(); i++) B[i] = 0;
+    iters++;
+  }
+  if (msg->meta.version <= iters) {
+    rpl.meta.customer_id = -1;
+  }
+  else{//decision making for receiver
+    for (std::size_t i = 0;i < lifetime[req_node_id].size(); i++) {
+      if (lifetime[req_node_id][i] != -1 && iters-lifetime[req_node_id][i] > 5){
+        lifetime[req_node_id][i] = -1;
+        A[req_node_id][i] = -1;
+      }
+    }
+    int receiver_id = -1;
+    int num_know_node = 0, num_unknow_node = 0;
+    for (std::size_t i = 0; i < A[req_node_id].size(); i++) {
+      if ((i % 2) && B[i] == 0) {
+        if (A[req_node_id][i] != -1) num_know_node++;
+        else num_unknow_node++;
+      }
+    }
+    //adjust value
+    num_unknow_node -= 4;
+    if (Postoffice::Get()->num_servers() > Postoffice::Get()->num_workers()) {
+      num_unknow_node -= (Postoffice::Get()->num_servers() - Postoffice::Get()->num_workers());
+    }
+    //choose dicision mode
+    unsigned int seed = time(0);
+    srand(seed);
+    int rand_number = rand() % 10;
+    double greed_rate = double(num_know_node / (num_know_node+num_unknow_node)) < max_greed_rate ?
+                        double(num_know_node / (num_know_node+num_unknow_node)) : max_greed_rate;
+    if (num_know_node != 0 && rand_number <= greed_rate * 10) { //greedy mode
+      int throughput = -1;
+      for (std::size_t i = 0; i < A[req_node_id].size(); i++) {
+        if (B[i] == 0 && A[req_node_id][i] > throughput) {
+          receiver_id = i;
+          throughput = A[req_node_id][i];
+        }
+      }
+    }
+    else {//random mode
+      if (num_unknow_node == 0) { // updated by kaiserqzyue
+        int cnt = rand() % (Postoffice::Get()->num_workers() - temp);
+        for (size_t i = 9; i < A[req_node_id].size(); i += 2) {
+          if (B[i] == 0) {
+            if (cnt == 0) {
+              receiver_id = i;
+              break;
+            }
+            cnt--;
+          }
+        }
+      } else {
+        rand_number = (rand() % num_unknow_node) + 5;
+        int counter = 0;
+        for (std::size_t i = 0; i < A[req_node_id].size(); i++){
+          if (B[i]==0 && (i%2) && (A[req_node_id][i] == -1)) {
+            counter++;
+            if (counter == rand_number) {
+                receiver_id = i;
+                break;
+            }
+          }
+        }
+      }
+    }
+    //send reply message
+    rpl.meta.customer_id = receiver_id;
+  }
+  if (rpl.meta.customer_id != -1) B[rpl.meta.customer_id] = 1;
+  lks.unlock();
+  Send(rpl);
+}
+
+void Van::ProcessReplyCommand(Message* reply) {
+  std::unique_lock<std::mutex> ask_lk(ask_mu);
+  receiver_=reply->meta.customer_id;
+  ask_lk.unlock();
+  ask_cond.notify_one();
+}
+
+int Van::GetReceiver(int throughput, int last_recv_id, int version) {
+    Ask(throughput, last_recv_id, version);
+    std::unique_lock<std::mutex> ask_lk(ask_mu);
+    while (receiver_== -2){ ask_cond.wait(ask_lk); }
+    int temp = receiver_;
+    receiver_ = -2 ;
+    ask_lk.unlock();
+    return temp;
 }
 
 void Van::PackMetaPB(const Meta& meta, PBMeta* pb) {
@@ -539,6 +778,7 @@ void Van::PackMeta(const Meta& meta, char** meta_buf, int* buf_size) {
   if (meta.num_aggregation != Meta::kEmpty) pb.set_num_aggregation(meta.num_aggregation);
   if (meta.version != Meta::kEmpty) pb.set_version(meta.version);
   if (meta.key != Meta::kEmpty) pb.set_key(meta.key);
+  if (meta.iters != Meta::kEmpty) pb.set_iters(meta.iters);
   pb.set_ask_as_receiver_status(meta.ask_as_receiver_status);
   if (meta.body.size()) pb.set_body(meta.body);
   pb.set_push(meta.push);
@@ -586,6 +826,7 @@ void Van::UnpackMeta(const char* meta_buf, int buf_size, Meta* meta) {
   meta->num_aggregation = pb.has_num_aggregation() ? pb.num_aggregation() : Meta::kEmpty;
   meta->version = pb.has_version() ? pb.version() : Meta::kEmpty;
   meta->key = pb.has_key() ? pb.key() : Meta::kEmpty;
+  meta->iters = pb.has_iters() ? pb.iters() : Meta::kEmpty;
   meta->ask_as_receiver_status = pb.ask_as_receiver_status();
   meta->head = pb.head();
   meta->app_id = pb.has_app_id() ? pb.app_id() : Meta::kEmpty;

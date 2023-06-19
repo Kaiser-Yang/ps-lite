@@ -132,7 +132,11 @@ struct Control {
     MODEL_DISTRIBUTION,
     ASK_AS_RECEIVER_REPLY,
     NOTICE_WORKER_ONE_ITERATION_FINISH,
-    INIT
+    INIT,
+    AUTOPULLRPY,
+    ASK,
+    REPLY,
+    ASK1
   };
   /** \brief the command */
   Command cmd;
@@ -154,7 +158,7 @@ struct Meta {
            timestamp(kEmpty), sender(kEmpty), recver(kEmpty),
            request(false), push(false), pull(false), simple_app(false),
            local_aggregation_receiver(kEmpty), model_receiver(kEmpty), last_receiver(kEmpty),
-           last_bandwidth(kEmpty), num_aggregation(kEmpty), version(kEmpty), key(kEmpty), ask_as_receiver_status(false) {}
+           last_bandwidth(kEmpty), num_aggregation(kEmpty), version(kEmpty), key(kEmpty), ask_as_receiver_status(false), iters(kEmpty) {}
   std::string DebugString() const {
     std::stringstream ss;
     if (sender == Node::kEmpty) {
@@ -221,6 +225,7 @@ struct Meta {
   int version;
   int key;
   bool ask_as_receiver_status;
+  int iters;
 };
 /**
  * \brief messages that communicated amaong nodes.

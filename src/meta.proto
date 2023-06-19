@@ -66,4 +66,5 @@ message PBMeta {
   optional int32 version = 19;
   optional int32 key = 20;
   optional bool ask_as_receiver_status = 21;
+  optional int32 iters = 22;
 }
