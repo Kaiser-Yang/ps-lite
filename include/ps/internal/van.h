@@ -14,6 +14,7 @@
 #include <vector>
 #include <queue>
 #include <condition_variable>
+#include <map>
 #include "ps/base.h"
 #include "ps/internal/message.h"
 #include "my_thread_pool.h"
@@ -111,6 +112,8 @@ class Van {
 
   void Ask1(int app, int customer1, int timestamp);
 
+  bool Reachable(int nodeAID, int nodeBID);
+
  protected:
   /**
    * \brief connect to a node
@@ -199,6 +202,7 @@ class Van {
   int local_aggregation_receiver_ = -1;
   int num_as_receiver_ = 0;
   bool can_be_receiver_ = true;
+  std::map<std::pair<int, int>, bool> reachable;
 
   std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_;
   std::mutex mu_ma_, mu_md_, mu_on_bw_lt_;
