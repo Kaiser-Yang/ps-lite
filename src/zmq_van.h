@@ -103,6 +103,7 @@ class ZMQVan : public Van {
     if ((node.role == my_node_.role) && (node.id != my_node_.id) && !ps::GetEnv("ENABLE_LEMETHOD", false) && !ps::GetEnv("ENABLE_TSENGINE", false)) {
       return;
     }
+    if (ps::GetEnv("ENABLE_TSENGINE", false) && !Reachable(my_node_.id, node.id)) { return; }
     void *sender = zmq_socket(context_, ZMQ_DEALER);
     CHECK(sender != NULL)
         << zmq_strerror(errno)

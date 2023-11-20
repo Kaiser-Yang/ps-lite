@@ -3,6 +3,9 @@
  */
 
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <thread>
 
 #include "ps/base.h"
@@ -271,23 +274,69 @@ void Van::Start(int customer_id) {
     scheduler_.role = Node::SCHEDULER;
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
-
+    const char *enableTsengineVal = Environment::Get()->find("ENABLE_TSENGINE");
+    const char *enableLemethodVal = Environment::Get()->find("ENABLE_LEMETHOD");
+    bool enableTsengine = false;
+    bool enableLemethod = false;
+    if (enableTsengineVal != nullptr) {
+      CHECK(CanToInteger(enableTsengineVal)) << "failed to convert ENABLE_TSENGINE to integer.";
+      enableTsengine = (bool)atoi(enableTsengineVal);
+    }
+    if (enableLemethodVal != nullptr) {
+      CHECK(CanToInteger(enableLemethodVal)) << "failed to convert ENABLE_LEMETHOD to integer.";
+      enableLemethod = (bool)atoi(enableLemethodVal);
+    }
+    CHECK(!(enableTsengine && enableLemethod)) <<
+          "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
+    if (enableLemethod) { // to get the connection relationship of all nodes
+      const char *lemothodConnectionTypeVal = Environment::Get()->find("LEMETHOD_CONNECTION_TYPE");
+      if (lemothodConnectionTypeVal == nullptr) { // the default value of LEMETHOD_CONNECTION_TYPE
+        lemothodConnectionTypeVal = "0";
+      }
+      CHECK(CanToInteger(lemothodConnectionTypeVal)) << "failed to convert LEMETHOD_CONNECTION_TYPE to integer.";
+      int lemothodConnectionType = atoi(lemothodConnectionTypeVal);
+      CHECK(lemothodConnectionType >= 0 &&
+            lemothodConnectionType <= 2) <<
+            "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
+      int serverID = Postoffice::Get()->ServerRankToID(0);
+      int workerID = 0;
+      for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable each other
+        workerID = Postoffice::Get()->WorkerRankToID(i);
+        reachable[{serverID, workerID}] = true;
+        reachable[{workerID, serverID}] = true;
+        reachable[{workerID, workerID}] = true;
+      }
+      if (lemothodConnectionType == 1) {
+        const char *lemethodConfPath = Environment::Get()->find("LEMETHOD_CONF_PATH");
+        if (lemethodConfPath == nullptr) {
+          lemethodConfPath = "~/lemethod.conf";
+        }
+        std::ifstream ifs(lemethodConfPath);
+        CHECK(ifs.good()) << "there are some errors while opening the file: " << lemethodConfPath << ".";
+        std::string line, cmd;
+        std::istringstream iss;
+        int nodeRankA, nodeRankB;
+        while (std::getline(ifs, line)) {
+          iss = std::istringstream(line);
+          iss >> cmd;
+          if (cmd != "ADD_CONNECTION") {
+            continue;
+          }
+          iss >> nodeRankA >> nodeRankB;
+          CHECK(!iss.fail()) << "make sure the NODE_RANK is integer.";
+          reachable[{Postoffice::Get()->WorkerRankToID(nodeRankA), Postoffice::Get()->WorkerRankToID(nodeRankB)}] = true;
+        };
+      } else if (lemothodConnectionType == 2) { // all the workers can reach each other
+        for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
+          for (int j = 0; j < Postoffice::Get()->num_workers(); j++) {
+            reachable[{Postoffice::Get()->WorkerRankToID(i), Postoffice::Get()->WorkerRankToID(j)}] = true;
+          }
+        }
+      }
+    }
     // get my node info
     if (is_scheduler_) {
       my_node_ = scheduler_;
-      const char *enableTsengineVal = Environment::Get()->find("ENABLE_TSENGINE");
-      const char *enableLemethodVal = Environment::Get()->find("ENABLE_LEMETHOD");
-      bool enableTsengine = false;
-      bool enableLemethod = false;
-      if (enableTsengineVal != nullptr) {
-        CHECK(CanToInteger(enableTsengineVal)) << "failed to convert ENABLE_TSENGINE to integer.";
-        enableTsengine = (bool)atoi(enableTsengineVal);
-      }
-      if (enableLemethodVal != nullptr) {
-        CHECK(CanToInteger(enableLemethodVal)) << "failed to convert ENABLE_LEMETHOD to integer.";
-        enableLemethod = (bool)atoi(enableLemethodVal);
-      }
-      CHECK(!(enableTsengine && enableLemethod)) << "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
       if (enableTsengine) {
         max_greed_rate= atof(Environment::Get()->find("GREED_RATE"));
         int num_servers = Postoffice::Get()->num_servers();
@@ -326,10 +375,10 @@ void Van::Start(int customer_id) {
         unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
         for (int i = 0; i < maxNodeID; i++) {
-          bandwidth_.push_back(std::vector<int>(maxNodeID, 0));
-          lifetime_.push_back(std::vector<int>(maxNodeID, -1));
-          edge_weight_ma_.push_back(std::vector<int>(maxNodeID, -INF));
-          edge_weight_md_.push_back(std::vector<int>(maxNodeID, -INF));
+          bandwidth_.emplace_back(maxNodeID, 0);
+          lifetime_.emplace_back(maxNodeID, -1);
+          edge_weight_ma_.emplace_back(maxNodeID, -INF);
+          edge_weight_md_.emplace_back(maxNodeID, -INF);
         }
         receiver_ma_.resize(maxNodeID, UNKNOWN);
         receiver_md_.resize(maxNodeID, UNKNOWN);
@@ -559,6 +608,10 @@ void Van::Ask(int throughput, int last_recv_id, int version) {
   msg.meta.version = version;
   msg.meta.timestamp = timestamp_++;
   Send(msg);
+}
+
+bool Van::Reachable(int nodeaID, int nodebID) {
+  return reachable[{nodeaID, nodebID}];
 }
 
 void Van::Ask1(int app, int customer, int timestamp){
@@ -893,6 +946,7 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 }
 
 void Van::CheckModelDistributionFinish() {
+  num_md_++;
   if (num_md_ != Postoffice::Get()->num_workers()) { return; }
   auto &unreceived_nodes_ = unreceived_nodes_md_;
   num_md_ = 0;
@@ -946,7 +1000,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
       locker2.unlock();
       if (rpl.meta.model_receiver != -1) {
         locker1.lock();
-        num_md_++;
         CheckModelDistributionFinish();
         locker1.unlock();
       }
@@ -962,7 +1015,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
       locker.unlock();
       if (rpl.meta.model_receiver != -1) {
         std::lock_guard<std::mutex> locker2{mu_};
-        num_md_++;
         CheckModelDistributionFinish();
       }
       Send(rpl);
@@ -1017,7 +1069,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
   receiver_[requestor] = UNKNOWN;
   locker2.unlock();
   if (rpl.meta.model_receiver != -1) {
-    num_md_++;
     CheckModelDistributionFinish();
     locker1.unlock();
   }
@@ -1045,6 +1096,7 @@ void Van::CheckModelAggregationFinish() {
 }
 
 // this will be excuted in another thread so the parameter should copy from the origin
+// TODO add waiting time for the first node who AskLocalAggregation
 void Van::ProcessAskLocalAggregation(Message msg) {
   auto &unreceived_nodes_ = unreceived_nodes_ma_;
   auto &left_nodes_ = left_nodes_ma_;
@@ -1139,6 +1191,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       while(left_nodes_.size() < right_nodes_.size()) {
         maxScore = -1; toLeftNode = -1; score = -INF;
         for (int rightNode : right_nodes_) {
+          if (receiver_[rightNode] != UNKNOWN) { continue; }
           score = -INF;
           for (int anotherRightNode : right_nodes_) {
             if (anotherRightNode == rightNode) { continue; }
@@ -1194,11 +1247,28 @@ bool Van::IsVirtualNode(int id) {
 
 void Van::GetEdgeWeight(bool reverse, std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_) {
   std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
+  long long avg = 0;
+  int cnt = 0;
+  for (int leftNode : left_nodes_) {
+    for (int rightNode : right_nodes_) {
+      if (reachable[leftNode][rightNode] && lifetime_[leftNode][rightNode] != -1) {
+        cnt++;
+        avg += bandwidth_[leftNode][rightNode];
+      }
+      if (reachable[rightNode][leftNode] && lifetime_[rightNode][leftNode] != -1) {
+        cnt++;
+        avg += bandwidth_[rightNode][leftNode];
+      }
+    }
+  }
+  if (cnt != 0) { avg /= cnt; }
   if (reverse) {
     for (int leftNode : left_nodes_) {
       for (int rightNode : right_nodes_) {
-        if (lifetime_[rightNode][leftNode] == -1) {
+        if (!reachable[rightNode][leftNode]) {
           edge_weight_[rightNode][leftNode] = -INF;
+        }else if (lifetime_[rightNode][leftNode] == -1) {
+          edge_weight_[rightNode][leftNode] = avg;
         } else {
           edge_weight_[rightNode][leftNode] = bandwidth_[rightNode][leftNode];
         }
@@ -1207,10 +1277,12 @@ void Van::GetEdgeWeight(bool reverse, std::unordered_set<int>& left_nodes_, std:
   } else {
     for (int leftNode : left_nodes_) {
       for (int rightNode : right_nodes_) {
-        if (lifetime_[rightNode][leftNode] == -1) {
+        if (!reachable[leftNode][rightNode]) {
           edge_weight_[leftNode][rightNode] = -INF;
+        }else if (lifetime_[leftNode][rightNode] == -1) {
+          edge_weight_[leftNode][rightNode] = avg;
         } else {
-          edge_weight_[leftNode][rightNode] = bandwidth_[rightNode][leftNode];
+          edge_weight_[leftNode][rightNode] = bandwidth_[leftNode][rightNode];
         }
       }
     }
@@ -1281,9 +1353,9 @@ void Van::KMBfs(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rig
   int nextNode = -1, leftNode = -1, delta = INF, u = 0;
   match[u] = startNode;
   std::vector<bool> augmented(maxID, false);
-  std::vector<int> parent(maxID, 0), slack(maxID, std::numeric_limits<int>::max());
+  std::vector<int> parent(maxID, 0), slack(maxID, INF);
   do {
-    leftNode = match[u]; augmented[u] = true; delta = std::numeric_limits<int>::max();
+    leftNode = match[u]; augmented[u] = true; delta = INF;
     for (int rightNode : rightNodes) {
       if (augmented[rightNode]) { continue; }
       int temp = leftWeight[leftNode] + rightWeight[rightNode] - edgeWeight[leftNode][rightNode];
