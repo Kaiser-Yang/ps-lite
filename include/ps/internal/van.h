@@ -43,7 +43,9 @@ class Van {
   virtual ~Van() {}
 
   enum RECEIVER_STATUS {
-    UNKNOWN = -2
+    QUIT = -1,
+    UNKNOWN = -2,
+    UNMATCHED = -3,
   };
 
   /**
@@ -199,28 +201,38 @@ class Van {
   int drop_rate_ = 0;
   std::atomic<int> timestamp_{0};
   int init_stage = 0;
-  int local_aggregation_receiver_ = -1;
+  int local_aggregation_receiver_ = UNKNOWN;
   int num_as_receiver_ = 0;
   bool can_be_receiver_ = true;
-  std::map<std::pair<int, int>, bool> reachable;
+  std::map<std::pair<int, int>, bool> reachable_;
 
   std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_;
   std::mutex mu_ma_, mu_md_, mu_on_bw_lt_;
   std::mutex mutex_on_km_ma_, mutex_on_km_md_;
   std::unordered_set<int> left_nodes_ma_, right_nodes_ma_, left_nodes_md_, right_nodes_md_;
   std::vector<std::vector<int>> edge_weight_ma_, edge_weight_md_;
-  std::vector<int> receiver_ma_, sender_ma_, receiver_md_, sender_md_;
+  std::vector<int> receiver_ma_, match_ma_, receiver_md_, match_md_;
   int num_ma_ = 0, num_md_ = 0;
   std::vector<std::vector<int>> bandwidth_, lifetime_;
   std::condition_variable cv_;
   std::mutex cv_mu_;
   MyThreadPool threadPool_;
-  int reply_node_id_ = -1;
+  int reply_node_id_ = UNKNOWN;
   bool receive_model_distribution_reply_ = false;
   static constexpr int INF = 86400;
   static constexpr double DEFAULT_GREED_RATE = 0.5;
   static constexpr int DEFAULT_MAX_THREAD_NUM = 1000;
   static constexpr int BANDWIDTH_EXPIRATION_TIME = 5;
+  static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
+  double schedule_ratio_ = UNKNOWN;
+  int model_aggregation_num_ = 0;
+  int minimum_model_aggregation_num_ = 1;
+  int model_distribution_num_ = 0;
+  /* How many scheduling has been done during one model distribution. */
+  // int md_schedule_cnt_ = 0;
+  // std::vector<int> minimum_model_distribution_num_;
+  int minimum_model_distribution_num_ = 1;
+  std::condition_variable mman_cv_, mmdn_cv_;
 
   double greed_rate_;
   int max_thread_num_;
@@ -235,6 +247,10 @@ class Van {
   std::vector<std::vector<int>> lifetime;
   int iters=-1;
 
+  int GetAvgBandwidth();
+
+  // void MinimumNumberComputation();
+
   bool WaitForAskAsReceiverReply(int nodeID);
 
   bool CanToFloat(const char *str);
@@ -243,7 +259,7 @@ class Van {
 
   bool IsVirtualNode(int id);
 
-  void GetEdgeWeight(bool reverse, std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_);
+  void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_);
 
   void AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes);
 
