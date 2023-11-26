@@ -48,6 +48,11 @@ class Van {
     UNMATCHED = -3,
   };
 
+  enum LEMETHOD_CONNECTION_TYPE {
+    PS_CONNECTION_TYPE = 0,
+    COMPLETE_CONNECTION_TYPE = 1,
+  };
+
   /**
    * \brief start van
    *
@@ -219,19 +224,25 @@ class Van {
   MyThreadPool threadPool_;
   int reply_node_id_ = UNKNOWN;
   bool receive_model_distribution_reply_ = false;
-  static constexpr int INF = 86400;
+  static constexpr int INF = 0x3f3f3f3f;
   static constexpr double DEFAULT_GREED_RATE = 0.5;
-  static constexpr int DEFAULT_MAX_THREAD_NUM = 1000;
   static constexpr int BANDWIDTH_EXPIRATION_TIME = 5;
   static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
   double schedule_ratio_ = UNKNOWN;
+
+  /* How many nodes have requestes for model aggregation in one scheduling. */
   int model_aggregation_num_ = 0;
+
+  /* The minimum num of nodes participating one scheduling of model aggregation. */
   int minimum_model_aggregation_num_ = 1;
+
+  /* How many nodes have requestes for model distribution in one scheduling. */
   int model_distribution_num_ = 0;
-  /* How many scheduling has been done during one model distribution. */
-  // int md_schedule_cnt_ = 0;
-  // std::vector<int> minimum_model_distribution_num_;
+
+  /* The minimum num of nodes participating one scheduling of model distribution*/
   int minimum_model_distribution_num_ = 1;
+
+  std::mutex mman_cv_mu_, mmdn_cv_mu_;
   std::condition_variable mman_cv_, mmdn_cv_;
 
   double greed_rate_;
@@ -247,9 +258,7 @@ class Van {
   std::vector<std::vector<int>> lifetime;
   int iters=-1;
 
-  int GetAvgBandwidth();
-
-  // void MinimumNumberComputation();
+  int GetAvgBandwidth(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_);
 
   bool WaitForAskAsReceiverReply(int nodeID);
 
