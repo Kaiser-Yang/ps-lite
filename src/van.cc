@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -262,17 +263,6 @@ void Van::ProcessAddNodeCommand(Message* msg, Meta* nodes,
   }
 }
 
-// void Van::MinimumNumberComputation() {
-//   minimum_model_aggregation_num_ = Postoffice::Get()->num_workers() * schedule_ratio_;
-//   int totNodeNum = Postoffice::Get()->num_workers() + 1;
-//   for (int i = 0; (1 << i) <= totNodeNum; i++) {
-//     minimum_model_distribution_num_.emplace_back(1 << i);
-//   }
-//   if (totNodeNum - minimum_model_distribution_num_.back() > 0) {
-//     minimum_model_distribution_num_.emplace_back((totNodeNum - minimum_model_distribution_num_.back()) << 1);
-//   }
-// }
-
 void Van::Start(int customer_id) {
   // get scheduler info
   start_mu_.lock();
@@ -317,11 +307,13 @@ void Van::Start(int customer_id) {
         reachable_[{workerID, serverID}] = true;
         reachable_[{workerID, workerID}] = true;
       }
-      const char *lemethodConfPath = Environment::Get()->find("LEMETHOD_CONF_PATH");
-      if (lemethodConfPath == nullptr) {
-        lemethodConfPath = "~/lemethod.conf";
+      reachable_[{serverID, serverID}] = true;
+      const char *lemethodConfPathCStr = Environment::Get()->find("LEMETHOD_CONF_PATH");
+      std::string lemethodConfPath = lemethodConfPathCStr == nullptr ? "" : lemethodConfPathCStr;
+      if (lemethodConfPath.empty()) {
+        lemethodConfPath = std::string(Environment::Get()->find("HOME")) + std::string("/lemethod.conf");
       }
-      std::ifstream ifs(lemethodConfPath);
+      std::ifstream ifs(lemethodConfPath.c_str());
       CHECK(ifs.good()) << "there are some errors while opening the file: " << lemethodConfPath << ".";
       std::string line, cmd;
       std::istringstream iss;
@@ -329,23 +321,22 @@ void Van::Start(int customer_id) {
       while (std::getline(ifs, line)) {
         iss = std::istringstream(line);
         iss >> cmd;
-        if (cnt == "ADD_CONNECTION") {
+        if (cmd == "ADD_CONNECTION") {
           iss >> nodeRankA >> nodeRankB;
           CHECK(!iss.fail()) << "make sure the NODE_RANK is an integer.";
           reachable_[{Postoffice::Get()->WorkerRankToID(nodeRankA), Postoffice::Get()->WorkerRankToID(nodeRankB)}] = true;
-        } else if (cnt == "SET_SCHEDUEL_RATIO") {
+        } else if (cmd == "SET_SCHEDUEL_RATIO") {
           CHECK(schedule_ratio_ == UNKNOWN) << "multiple SET_SCHEDUEL_RATIO commands.";
           iss >> schedule_ratio_;
-          CHECK(!iss.faile()) << "make sure SCHEDUEL_RATIO is a number."
+          CHECK(!iss.fail()) << "make sure SCHEDUEL_RATIO is a number.";
           CHECK(schedule_ratio_ >= 0 && schedule_ratio_ <= 1) << "SCHEDUEL_RATIO must be in [0, 1].";
         }
       };
       if (schedule_ratio_ == UNKNOWN) {
         schedule_ratio_ = DEFAULT_SCHEDULE_RATIO;
       }
-      // MinimumNumberComputation();
-      minimum_model_aggregation_num_ = Postoffice::Get()->num_workers() * schedule_ratio_;
-      if (lemothodConnectionType == 2) { // all the workers can reach each other
+      minimum_model_aggregation_num_ = std::max((int)(Postoffice::Get()->num_workers() * schedule_ratio_), 1);
+      if (lemothodConnectionType == COMPLETE_CONNECTION_TYPE) {
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           for (int j = 0; j < Postoffice::Get()->num_workers(); j++) {
             reachable_[{Postoffice::Get()->WorkerRankToID(i), Postoffice::Get()->WorkerRankToID(j)}] = true;
@@ -357,7 +348,7 @@ void Van::Start(int customer_id) {
     if (is_scheduler_) {
       my_node_ = scheduler_;
       if (enableTsengine) {
-        max_greed_rate= atof(Environment::Get()->find("GREED_RATE"));
+        max_greed_rate = atof(Environment::Get()->find("GREED_RATE"));
         int num_servers = Postoffice::Get()->num_servers();
         int num_workers = Postoffice::Get()->num_workers();
         int num_max = num_servers > num_workers ? num_servers : num_workers;
@@ -373,6 +364,7 @@ void Van::Start(int customer_id) {
         }
         ask_q.push(8);
       } else if (enableLemethod) {
+        CHECK(Postoffice::Get()->num_servers() == 1) << "LeMethod only suport one server.";
         const char *greedRateStr = Environment::Get()->find("GREED_RATE");
         CHECK(greedRateStr == nullptr || CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
         if (greedRateStr == nullptr) { greed_rate_ = DEFAULT_GREED_RATE; }
@@ -380,7 +372,7 @@ void Van::Start(int customer_id) {
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
         const char *maxThreadNumStr = Environment::Get()->find("MAX_THREAD_NUM");
         CHECK(maxThreadNumStr == nullptr || CanToInteger(maxThreadNumStr)) << "failed to convert MAX_THREAD_NUM to integer";
-        if (maxThreadNumStr == nullptr) { max_thread_num_ = DEFAULT_MAX_THREAD_NUM; }
+        if (maxThreadNumStr == nullptr) { max_thread_num_ = Postoffice::Get()->num_workers() + 1; }
         else { max_thread_num_ = atoi(maxThreadNumStr); }
         CHECK(max_thread_num_ > 0 && max_thread_num_ < std::numeric_limits<int>::max())
           << "MAX_THREAD_NUM must be in (0, "
@@ -391,13 +383,13 @@ void Van::Start(int customer_id) {
           unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
-        unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
+        // unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
         for (int i = 0; i < maxNodeID; i++) {
-          bandwidth_.emplace_back(maxNodeID, 0);
-          lifetime_.emplace_back(maxNodeID, UNKNOWN);
-          edge_weight_ma_.emplace_back(maxNodeID, -INF);
-          edge_weight_md_.emplace_back(maxNodeID, -INF);
+          bandwidth_.emplace_back(std::vector<int>(maxNodeID, 0));
+          lifetime_.emplace_back(std::vector<int>(maxNodeID, -1));
+          edge_weight_ma_.emplace_back(std::vector<int>(maxNodeID, -INF));
+          edge_weight_md_.emplace_back(std::vector<int>(maxNodeID, -INF));
         }
         receiver_ma_.resize(maxNodeID, UNKNOWN);
         receiver_md_.resize(maxNodeID, UNKNOWN);
@@ -966,9 +958,7 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 
 void Van::CheckModelDistributionFinish() {
   num_md_++;
-  // +1 means we need to count the PS.
-  if (num_md_ != Postoffice::Get()->num_workers() + 1) { return; }
-  // md_schedule_cnt_ = 0;
+  if (num_md_ != Postoffice::Get()->num_workers()) { return; }
   minimum_model_distribution_num_ = 1;
   auto &unreceived_nodes_ = unreceived_nodes_md_;
   num_md_ = 0;
@@ -976,7 +966,7 @@ void Van::CheckModelDistributionFinish() {
   for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
   }
-  unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
+  // unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
   CheckExpiration();
 }
 
@@ -996,76 +986,50 @@ void Van::ProcessAskModelReceiver(Message msg) {
   rpl.meta.recver = msg.meta.sender;
   int requestor = msg.meta.sender;
   Postoffice* postoffice = Postoffice::Get();
-  if (msg.meta.last_receiver != QUIT) {
+  if (msg.meta.last_receiver != UNKNOWN) {
     std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
   }
   {
     std::unique_lock<std::mutex> locker{mu_};
+    if (msg.meta.version <= iteration_) {
+      rpl.meta.model_receiver = QUIT;
+      Send(rpl);
+      return;
+    }
+  }
+  {
+    std::unique_lock<std::mutex> locker{mmdn_cv_mu_};
     model_distribution_num_++;
     mmdn_cv_.notify_all();
     mmdn_cv_.wait(locker, [this]() {
       return model_distribution_num_ == minimum_model_distribution_num_;
     });
-    if (unreceived_nodes_.count(requestor)) {
-      unreceived_nodes_.erase(requestor);
-      CheckModelDistributionFinish();
-    }
-    if (msg.meta.version <= iteration_) {
-      locker.unlock();
-      rpl.meta.model_receiver = QUIT;
-      {
-        std::lock_guard<std::mutex> locker{mutex_on_km_};
-        receiver_[requestor] = UNKNOWN;
-      }
-      Send(rpl);
-      return;
-    }
-    // try to remove this if structure...
-    // if (unreceived_nodes_.empty()) {
-    //   locker1.unlock();
-    //   std::unique_lock<std::mutex> locker2{mutex_on_km_};
-    //   rpl.meta.model_receiver = receiver_[requestor] < 0 ? -1 : receiver_[requestor];
-    //   receiver_[requestor] = UNKNOWN;
-    //   locker2.unlock();
-    //   if (rpl.meta.model_receiver != -1) {
-    //     locker1.lock();
-    //     locker1.unlock();
-    //   }
-    //   Send(rpl);
-    //   return;
-    // }
+    model_distribution_num_--;
+    minimum_model_distribution_num_--;
+    mmdn_cv_.notify_all();
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
-  std::lock(locker1, locker2);
-  // {
-  //   std::unique_lock<std::mutex> locker{mutex_on_km_};
+  std::unique_lock<std::mutex> locker3(mmdn_cv_mu_, std::defer_lock);
+  std::lock(locker1, locker2, locker3);
   if (receiver_[requestor] != UNKNOWN) {
     // when the receiver is not connected with requestor, we try to reschedule.
-    if (receiver_[requestor] != QUIT && !reachable[requestor][receiver_[requestor]]) {
+  SendOrReschedule:
+    if (receiver_[requestor] != QUIT && !reachable_[{requestor, receiver_[requestor]}]) {
       receiver_[requestor] = UNKNOWN;
       locker1.unlock();
       locker2.unlock();
+      locker3.unlock();
       ProcessAskModelReceiver(msg);
-      return;
+    } else {
+      rpl.meta.model_receiver = receiver_[requestor];
+      receiver_[requestor] = UNKNOWN;
+      Send(rpl);
     }
-    rpl.meta.model_receiver = receiver_[requestor];
-    receiver_[requestor] = UNKNOWN;
-    // locker.unlock();
-    // if (rpl.meta.model_receiver != -1) {
-    //   std::lock_guard<std::mutex> locker{mu_};
-    //   CheckModelDistributionFinish();
-    // }
-    Send(rpl);
     return;
   }
-  // }
-  model_distribution_num_ = 0;
-  // we will re-compute the minimum_model_distribution_num depending on how many nodes participate this scheduling.
-  minimum_model_distribution_num_ = 0;
-  // md_schedule_cnt_++;
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1079,7 +1043,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
   if (receiver_[psID] == UNKNOWN) {
     right_nodes_.insert(psID);
   }
-  // locker1.unlock();
   if (left_nodes_.size() > right_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
@@ -1089,49 +1052,43 @@ void Van::ProcessAskModelReceiver(Message msg) {
   } else {
     GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
     KM(left_nodes_, right_nodes_, edge_weight_, match_);
-    for (int rightNode : right_nodes_) { receiver[rightNode] = match_[rightNode];}
+    for (int rightNode : right_nodes_) { receiver_[rightNode] = match_[rightNode];}
   }
-  // locker1.lock();
-  // for (int rightNode : right_nodes_) {
-  //   if (receiver_[rightNode] != -1) {
-  //     unreceived_nodes_.erase(receiver_[rightNode]);
-  //   }
-  // }
-  srand(time(0));
-  for (int rightNode : right_nodes_) {
-    // 10000 means that the minimum precsion for greed_rate_ is 0.0001
-    int randNumber = rand() % 10000;
-    if (receiver_[rightNode] != UNMATCHED && lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
-        randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
-      int newReceiver = RandomGetReceiver(rightNode);
-      // unreceived_nodes_.insert(receiver_[rightNode]);
-      receiver_[rightNode] = newReceiver;
-      // unreceived_nodes_.erase(receiver_[rightNode]);
-    }
-    if (receiver_[rightNode] == UNMATCHED) { // the node will not join the next scheduling
-      receiver_[rightNode] = QUIT;
-    } else if (!reachable_[rightNode][receiver_[rightNode]]) { // reschedule
-      minimum_model_distribution_num_++;
-    } else { // next time two nodes will request.
-      minimum_model_distribution_num_ += 2;
+
+  // make sure all the waiting nodes are awake.
+  mmdn_cv_.wait(locker3, [this]() {
+    return model_distribution_num_ == 0;
+  });
+  {
+    for (int rightNode : right_nodes_) {
+      if (unreceived_nodes_.count(receiver_[rightNode])) {
+        unreceived_nodes_.erase(receiver_[rightNode]);
+        CheckModelDistributionFinish();
+      }
     }
   }
-  // locker1.unlock();
-  if (receiver_[requestor] != QUIT && !rechable[requestor][receiver_[requestor]]) {
-    receiver_[requestor] = UNKNOWN;
-    locker1.unlock();
-    locker2.unlock();
-    ProcessAskModelReceiver(msg);
-    return;
+  if (msg.meta.version > iteration_) { // if there are some unreceived nodes.
+    srand(time(nullptr));
+    for (int rightNode : right_nodes_) {
+      // 10000 means that the minimum precsion for greed_rate_ is 0.0001
+      int randNumber = rand() % 10000;
+      if (receiver_[rightNode] != UNMATCHED && lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
+          randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
+        int newReceiver = RandomGetReceiver(rightNode);
+        unreceived_nodes_.insert(receiver_[rightNode]);
+        receiver_[rightNode] = newReceiver;
+        unreceived_nodes_.erase(receiver_[rightNode]);
+      }
+      if (receiver_[rightNode] == UNMATCHED) { // the node will not join the next scheduling
+        receiver_[rightNode] = QUIT;
+      } else if (!reachable_[{rightNode, receiver_[rightNode]}]) { // reschedule
+        minimum_model_distribution_num_++;
+      } else { // next time two nodes will request.
+        minimum_model_distribution_num_ += 2;
+      }
+    }
   }
-  rpl.meta.model_receiver = receiver_[requestor];
-  receiver_[requestor] = UNKNOWN;
-  // locker2.unlock();
-  // if (rpl.meta.model_receiver != -1) {
-  //   CheckModelDistributionFinish();
-  //   locker1.unlock();
-  // }
-  Send(rpl);
+  goto SendOrReschedule;
 }
 
 void Van::AskLocalAggregation() {
@@ -1172,10 +1129,19 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   int requestor = msg.meta.sender;
   Postoffice *postoffice = Postoffice::Get();
   {
+    {
+      std::unique_lock<std::mutex> locker{mman_cv_mu_};
+      model_aggregation_num_++;
+      mman_cv_.notify_all();
+      mman_cv_.wait(locker, [this, &unreceived_nodes_]() {
+        return model_aggregation_num_ == minimum_model_aggregation_num_ ||
+              unreceived_nodes_.size() == 1; });
+      model_aggregation_num_--;
+      minimum_model_aggregation_num_--;
+      mman_cv_.notify_all();
+    }
     std::unique_lock<std::mutex> locker{mu_};
     unreceived_nodes_.erase(requestor);
-    model_aggregation_num_++;
-    mman_cv_.notify_all();
     // TODO try to remove this if structure...
     // if (unreceived_nodes_.size() == 1) {
     //   locker.unlock();
@@ -1187,17 +1153,16 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     //   Send(rpl);
     //   return;
     // }
-    mman_cv_.wait(locker, [this]() {
-      return model_aggregation_num_ >= minimum_model_aggregation_num_ ||
-             unreceived_nodes_.size() == 1; })
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
-  std::lock(locker1, locker2);
+  std::unique_lock<std::mutex> locker3{mman_cv_mu_, std::defer_lock};
+  std::lock(locker1, locker2, locker3);
   // {
     // std::unique_lock<std::mutex> locker{mutex_on_km_};
   if (receiver_[requestor] != UNKNOWN) {
-    if (!reachable_[requestor][receiver_[requestor]]) { receiver_[requestor] = postoffice->ServerRankToID(0); }
+  SendOrReschedule:
+    if (!reachable_[{requestor, receiver_[requestor]}]) { receiver_[requestor] = postoffice->ServerRankToID(0); }
     if (receiver_[requestor] != postoffice->ServerRankToID(0)){
       req.meta.recver = receiver_[requestor];
       req.meta.control.cmd = Control::ASK_AS_RECEIVER;
@@ -1219,6 +1184,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         // we must release the locks, so the recursivation can lock again.
         locker1.unlock();
         locker2.unlock();
+        locker3.unlock();
         ProcessAskLocalAggregation(msg);
       }
     } else {
@@ -1235,7 +1201,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     return;
   }
   // }
-  model_aggregation_num_ = 0;
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1245,7 +1210,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       right_nodes_.insert(workerID);
     }
   }
-  locker1.unlock();
   if (left_nodes_.size() >= right_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
@@ -1256,18 +1220,18 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
     KM(left_nodes_, right_nodes_, edge_weight_, match_);
     for (int rightNode : right_nodes_) { receiver_[rightNode] = match_[rightNode]; }
-    int maxScore = -1, toLeftNode = UNKNOW, score = -INF;
+    int maxScore = -1, toLeftNode = UNKNOWN, score = -INF;
     {
       // ProcessAskModelReceiver may be running, so there is need to lock.
       std::lock_guard<std::mutex> locker3{mu_on_bw_lt_};
-      int avg = GetAvgBandwidth();
+      int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
       while(left_nodes_.size() < right_nodes_.size()) {
-        maxScore = -1; toLeftNode = UNKNOWN; score = -INF;
+        maxScore = -1; toLeftNode = UNKNOWN, score = -INF;
         for (int rightNode : right_nodes_) {
           if (receiver_[rightNode] != UNKNOWN) { continue; }
           score = -INF;
           for (int anotherRightNode : right_nodes_) {
-            if (anotherRightNode == rightNode || !reachable_[anotherRightNode][rightNode]) { continue; }
+            if (anotherRightNode == rightNode || !reachable_[{anotherRightNode, rightNode}]) { continue; }
             if (lifetime_[anotherRightNode][rightNode] == UNKNOWN) {
               score = std::max(score, avg);
               continue;
@@ -1286,28 +1250,33 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         receiver_[toLeftNode] = UNKNOWN;
       }
     }
-    GetEdgeWeight(right_nodes_ left_nodes_, edge_weight_);
+    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
     for (int leftNode : left_nodes_) {
       if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
     }
   }
   // this if means that requestor is move to the left_nodes_ or the two nodes are not connected, we just let it send to PS.
-  if (receiver_[requestor] == UNKNOWN || !reachable_[requestor][receiver_[requestor]]) {
-    receiver_[requestor] = postoffice->ServerRankToID(0);
-  } else if (receiver_[requestor] != postoffice->ServerRankToID(0)) {
-    req.meta.recver = receiver_[requestor];
-    req.meta.control.cmd = Control::ASK_AS_RECEIVER;
-    Send(req);
-    bool ok = WaitForAskAsReceiverReply(req.meta.recver);
-    if (!ok) { receiver_[requestor] = postoffice->ServerRankToID(0); }
-  }
-  rpl.meta.local_aggregation_receiver = receiver_[requestor];
-  locker1.lock();
-  CheckModelAggregationFinish();
+  if (receiver_[requestor] == UNKNOWN) { receiver_[requestor] = postoffice->ServerRankToID(0); }
+  mman_cv_.wait(locker3, [this]() {
+    return model_aggregation_num_ == 0;
+  });
+  minimum_model_aggregation_num_ = std::max((int)(Postoffice::Get()->num_workers() * schedule_ratio_), 1);
+  goto SendOrReschedule;
+  // if (receiver_[requestor] == UNKNOWN || !reachable_[{requestor, receiver_[requestor]}]) {
+  //   receiver_[requestor] = postoffice->ServerRankToID(0);
+  // } else if (receiver_[requestor] != postoffice->ServerRankToID(0)) {
+  //   req.meta.recver = receiver_[requestor];
+  //   req.meta.control.cmd = Control::ASK_AS_RECEIVER;
+  //   Send(req);
+  //   bool ok = WaitForAskAsReceiverReply(req.meta.recver);
+  //   if (!ok) { receiver_[requestor] = postoffice->ServerRankToID(0); }
+  // }
+  // rpl.meta.local_aggregation_receiver = receiver_[requestor];
+  // CheckModelAggregationFinish();
   // locker1.unlock();
   // locker2.unlock();
-  Send(rpl);
+  // Send(rpl);
 }
 
 void Van::ProcessAskLocalAggregationReply(Message *msg) {
@@ -1322,16 +1291,16 @@ bool Van::IsVirtualNode(int id) {
 }
 
 
-int Van::GetAvgBandwidth() {
+int Van::GetAvgBandwidth(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_) {
   int avg = 0;
   int cnt = 0;
   for (int leftNode : left_nodes_) {
     for (int rightNode : right_nodes_) {
-      if (reachable_[leftNode][rightNode] && lifetime_[leftNode][rightNode] != UNKNOWN) {
+      if (reachable_[{leftNode, rightNode}] && lifetime_[leftNode][rightNode] != UNKNOWN) {
         cnt++;
         avg += bandwidth_[leftNode][rightNode];
       }
-      if (reachable_[rightNode][leftNode] && lifetime_[rightNode][leftNode] != UNKNOWN) {
+      if (reachable_[{rightNode, leftNode}] && lifetime_[rightNode][leftNode] != UNKNOWN) {
         cnt++;
         avg += bandwidth_[rightNode][leftNode];
       }
@@ -1343,13 +1312,13 @@ int Van::GetAvgBandwidth() {
 
 void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_) {
   std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
-  int avg = GetAvgBandwidth();
+  int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
   // int node1 = -1, node2 = -1;
   // if (reverse) {
   for (int leftNode : left_nodes_) {
     for (int rightNode : right_nodes_) {
       // node1 = reverse ? rightNode : leftNode, node2 = reverse ? leftNode : rightNode;
-      if (!reachable_[leftNode][rightNode]) {
+      if (!reachable_[{leftNode, rightNode}]) {
         edge_weight_[leftNode][rightNode] = -INF;
       }else if (lifetime_[leftNode][rightNode] == UNKNOWN) {
         edge_weight_[leftNode][rightNode] = avg;
@@ -1358,11 +1327,12 @@ void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set
         = bandwidth_[leftNode][rightNode];
       }
     }
+  }
     // }
   // } else {
   //   for (int leftNode : left_nodes_) {
   //     for (int rightNode : right_nodes_) {
-  //       if (!reachable_[leftNode][rightNode]) {
+  //       if (!reachable_[{leftNode, rightNode}]) {
   //         edge_weight_[leftNode][rightNode] = -INF;
   //       }else if (lifetime_[leftNode][rightNode] == -1) {
   //         edge_weight_[leftNode][rightNode] = avg;
@@ -1400,19 +1370,19 @@ int Van::RandomGetReceiver(int rightNode) {
   int numUnknownBandwidth = 0;
   int reachableNodeNum = 0;
   for (int node : unreceived_nodes_) {
-    if (reachable_[rightNode][node]) {
+    if (reachable_[{rightNode, node}]) {
       reachableNodeNum++;
       if (lifetime_[rightNode][node] == UNKNOWN) {
         numUnknownBandwidth++;
       }
     }
   }
-  if (reachableNodeNum == 0) { return UNMATCHED; }
+  if (reachableNodeNum == 0) { return receiver_[rightNode]; }
   int randNumber = 0;
   if (numUnknownBandwidth == 0) {
     randNumber = rand() % reachableNodeNum;
     for (int node : unreceived_nodes_) {
-      if (reachable[rightNode][node]) {
+      if (reachable_[{rightNode, node}]) {
         if (randNumber == 0) { return node; }
         randNumber--;
       }
@@ -1420,7 +1390,7 @@ int Van::RandomGetReceiver(int rightNode) {
   }
   randNumber = rand() % numUnknownBandwidth;
   for (int node : unreceived_nodes_) {
-    if (reachable[rightNode][node] && lifetime_[rightNode][node] == UNKNOWN) {
+    if (reachable_[{rightNode, node}] && lifetime_[rightNode][node] == UNKNOWN) {
       if (randNumber == 0) { return node; }
       randNumber--;
     }
@@ -1525,9 +1495,9 @@ void Van::WaitForModelDistributionReply() {
 int Van::GetModelReceiver(int lastBandwidth, int lastReceiver, int iteration) {
   AskModelReceiver(lastBandwidth, lastReceiver, iteration);
   std::unique_lock<std::mutex> locker{cv_mu_};
-  cv_.wait(locker, [this]() { return model_receiver_ != -2; });
+  cv_.wait(locker, [this]() { return model_receiver_ != UNKNOWN; });
   int res = model_receiver_;
-  model_receiver_ = -2;
+  model_receiver_ = UNKNOWN;
   return res;
 }
 

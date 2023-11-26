@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include "ps/internal/van.h"
+#include "dmlc/parameter.h"
 #if _MSC_VER
 #define rand_r(x) rand()
 #endif
@@ -100,10 +101,14 @@ class ZMQVan : public Van {
       zmq_close(it->second);
     }
     // worker doesn't need to connect to the other workers. same for server
-    if ((node.role == my_node_.role) && (node.id != my_node_.id) && !ps::GetEnv("ENABLE_LEMETHOD", false) && !ps::GetEnv("ENABLE_TSENGINE", false)) {
+    if (node.role == my_node_.role && node.id != my_node_.id &&
+        !dmlc::GetEnv("ENABLE_LEMETHOD", false) && !dmlc::GetEnv("ENABLE_TSENGINE", false)) {
       return;
     }
-    if (ps::GetEnv("ENABLE_TSENGINE", false) && !Reachable(my_node_.id, node.id)) { return; }
+    if (dmlc::GetEnv("ENABLE_LEMETHOD", false) && my_node_.role != Node::SCHEDULER &&
+        node.role != Node::SCHEDULER && !Reachable(my_node_.id, node.id)) {
+      return;
+    }
     void *sender = zmq_socket(context_, ZMQ_DEALER);
     CHECK(sender != NULL)
         << zmq_strerror(errno)

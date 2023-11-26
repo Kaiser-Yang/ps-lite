@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include "ps/internal/customer.h"
 #include "ps/internal/postoffice.h"
+#include "dmlc/parameter.h"
+
 namespace ps {
 
 const int Node::kEmpty = std::numeric_limits<int>::max();
@@ -45,7 +47,7 @@ int Customer::NumResponse(int timestamp) {
 void Customer::AddResponse(int timestamp, int num) {
   std::lock_guard<std::mutex> lk(tracker_mu_);
   tracker_[timestamp].second += num;
-  if (ps::GetEnv("ENABLE_TSENGINE", false)) {
+  if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
     tracker_cond_.notify_all();
   }
 }

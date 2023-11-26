@@ -1087,9 +1087,9 @@ void KVWorker<Val>::PullFromReceiveKvs(int key, SArray<Val> *vals, SArray<int> *
 
 template <typename Val>
 void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kvs) {
-  int lastBandwidth = -1;
-  int lastReceiver = -1;
-  int receiver = -1;
+  int lastBandwidth = ps::Van::UNKNOWN;
+  int lastReceiver = ps::Van::UNKNOWN;
+  int receiver = ps::Van::UNKNOWN;
   Message msg;
   msg.meta.app_id = 0;
   msg.meta.customer_id = 0;
@@ -1104,15 +1104,14 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
   delete kvs;
   while (true) {
     receiver = Postoffice::Get()->van()->GetModelReceiver(lastBandwidth, lastReceiver, reqMeta.version);
-    // std::cout << "MODEL DISTRIBUTION sender: " << msg.meta.sender << " receiver: " << receiver << std::endl;
-    if (receiver == -1) { break; }
+    if (receiver == ps::Van::QUIT) { break; }
     msg.meta.recver = receiver;
     clock_t startTime, endTime;
     startTime = clock();
     Postoffice::Get()->van()->Send(msg);
     Postoffice::Get()->van()->WaitForModelDistributionReply();
     endTime = clock();
-    lastBandwidth = (int)(startTime - endTime) / CLOCKS_PER_SEC;
+    lastBandwidth = (long long)(startTime - endTime) / CLOCKS_PER_SEC;
     lastReceiver = receiver;
   }
 }
