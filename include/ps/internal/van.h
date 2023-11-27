@@ -228,27 +228,35 @@ class Van {
   static constexpr double DEFAULT_GREED_RATE = 0.5;
   static constexpr int BANDWIDTH_EXPIRATION_TIME = 5;
   static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
+  /* The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known. */
+  int schedule_num_ = UNKNOWN;
+
+  /* The ratio that declare how many nodes will paticipate in one local aggregation scheduling. */
   double schedule_ratio_ = UNKNOWN;
 
   /* How many nodes have requestes for model aggregation in one scheduling. */
   int model_aggregation_num_ = 0;
 
   /* The minimum num of nodes participating one scheduling of model aggregation. */
-  int minimum_model_aggregation_num_ = 1;
+  int minimum_model_aggregation_num_ = UNKNOWN;
 
   /* How many nodes have requestes for model distribution in one scheduling. */
   int model_distribution_num_ = 0;
 
-  /* The minimum num of nodes participating one scheduling of model distribution*/
+  /* The minimum num of nodes participating one scheduling of model distribution. */
   int minimum_model_distribution_num_ = 1;
 
-  std::mutex mman_cv_mu_, mmdn_cv_mu_;
+  std::mutex mmdn_cv_mu_, mman_cv_mu_;
   std::condition_variable mman_cv_, mmdn_cv_;
 
+  /* The probability that one node will not choose its receiver randomly. */
   double greed_rate_;
+
+  /* The max number of threads, its default value is workers_num + 1. */
   int max_thread_num_;
+
   int iteration_ = 0;
-  int model_receiver_ = -2;
+  int model_receiver_ = UNKNOWN;
   int ask_as_receiver_status_ = false;
 
   std::vector<std::vector<int>> A;
@@ -262,11 +270,11 @@ class Van {
 
   bool WaitForAskAsReceiverReply(int nodeID);
 
+  /* Check if a string can be converted to a decimal, note this function will not check the bound. */
   bool CanToFloat(const char *str);
 
+  /* Check if a string can be converted to a integer, note this function will not check the bound. */
   bool CanToInteger(const char *str);
-
-  bool IsVirtualNode(int id);
 
   void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_);
 
@@ -274,6 +282,11 @@ class Van {
 
   void CheckExpiration();
 
+  /**!
+    * \brief Get a reachable and undetected receiver randomly.
+    * \note If all nodes are not reachable, this will return receiver_[rightNode].
+    * \note If all nodes are detected, this will return a detected node randomly.
+    */
   int RandomGetReceiver(int rightNode);
 
   void KMBfs(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes,
