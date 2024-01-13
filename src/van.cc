@@ -299,6 +299,7 @@ void Van::Start(int customer_id) {
       CHECK(lemothodConnectionType >= 0 &&
             lemothodConnectionType <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
+      PS_VLOG(-1) << "set LEMETHOD_CONNECTION_TYPE: " << lemothodConnectionType;
       int serverID = Postoffice::Get()->ServerRankToID(0);
       int workerID = 0;
       for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable_ each other
@@ -322,8 +323,12 @@ void Van::Start(int customer_id) {
         iss = std::istringstream(line);
         iss >> cmd;
         if (cmd == "ADD_CONNECTION") {
+          CHECK(lemothodConnectionType == USER_DESIGNED_CONNECTION_TYPE) <<
+            "make sure LEMETHOD_CONNECTION_TYPE is 2 while using ADD_CONNECTION";
           iss >> nodeRankA >> nodeRankB;
           CHECK(!iss.fail()) << "make sure the NODE_RANK is an integer.";
+          CHECK(nodeRankA < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
+          CHECK(nodeRankB < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
           reachable_[{Postoffice::Get()->WorkerRankToID(nodeRankA), Postoffice::Get()->WorkerRankToID(nodeRankB)}] = true;
         } else if (cmd == "SET_SCHEDULE_RATIO") {
           CHECK(schedule_ratio_ == UNKNOWN) << "multiple SET_SCHEDULE_RATIO commands.";
@@ -333,6 +338,7 @@ void Van::Start(int customer_id) {
           CHECK(schedule_ratio_ >= 0 && schedule_ratio_ <= 1) << "SCHEDULE_RATIO must be in [0, 1].";
         } else if (cmd == "SET_SCHEDULE_NUM") {
           CHECK(schedule_ratio_ == UNKNOWN) << "SET_SCHEDULE_RATIO and SET_SCHEDULE_NUM cannot use at same time.";
+          CHECK(schedule_num_ == UNKNOWN) << "multiple SET_SCHEDULE_NUM commands.";
           iss >> schedule_num_;
           CHECK(!iss.fail()) << "make sure SCHEDULE_NUM is a integer.";
           CHECK(schedule_num_ >= 1 && schedule_num_ <= Postoffice::Get()->num_workers())
@@ -391,11 +397,10 @@ void Van::Start(int customer_id) {
           unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
-        // unreceived_nodes_md_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
         for (int i = 0; i < maxNodeID; i++) {
           bandwidth_.emplace_back(std::vector<int>(maxNodeID, 0));
-          lifetime_.emplace_back(std::vector<int>(maxNodeID, -1));
+          lifetime_.emplace_back(std::vector<int>(maxNodeID, UNKNOWN));
           edge_weight_ma_.emplace_back(std::vector<int>(maxNodeID, -INF));
           edge_weight_md_.emplace_back(std::vector<int>(maxNodeID, -INF));
         }
@@ -966,15 +971,16 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 
 void Van::CheckModelDistributionFinish() {
   num_md_++;
-  if (num_md_ != Postoffice::Get()->num_workers()) { return; }
+  if (num_md_ != Postoffice::Get()->num_workers() + 1) { return; }
   minimum_model_distribution_num_ = 1;
   auto &unreceived_nodes_ = unreceived_nodes_md_;
+  auto &receiver_ = receiver_md_;
   num_md_ = 0;
   iteration_++;
   for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
   }
-  // unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
+  for (auto &receiver : receiver_) { receiver = UNKNOWN; }
   CheckExpiration();
 }
 
@@ -996,6 +1002,8 @@ void Van::ProcessAskModelReceiver(Message msg) {
   Postoffice* postoffice = Postoffice::Get();
   if (msg.meta.last_receiver != UNKNOWN) {
     std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
+    PS_VLOG(-1) << "detect bandwidth from " << requestor << " to "
+                << msg.meta.last_receiver << ": " << msg.meta.last_bandwidth;
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
   }
@@ -1038,11 +1046,13 @@ void Van::ProcessAskModelReceiver(Message msg) {
       PS_VLOG(-1) << "MODEL DISTRIBUTION sender: " << requestor
                   << " receiver: " << receiver_[requestor];
       rpl.meta.model_receiver = receiver_[requestor];
-      receiver_[requestor] = UNKNOWN;
+      if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
+      else { CheckModelDistributionFinish(); }
       Send(rpl);
     }
     return;
   }
+  PS_VLOG(-1) << requestor << " starts to schedule.";
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1059,9 +1069,8 @@ void Van::ProcessAskModelReceiver(Message msg) {
   if (left_nodes_.size() > right_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
-    for (int leftNode : left_nodes_) {
-      if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
-    }
+    for (int leftNode : left_nodes_) { if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; } }
+    for (int rightNode : right_nodes_) { if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = QUIT; } }
   } else {
     GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
     KM(left_nodes_, right_nodes_, edge_weight_, match_);
@@ -1077,9 +1086,8 @@ void Van::ProcessAskModelReceiver(Message msg) {
   });
   mmdn_cv_.notify_all();
   for (int rightNode : right_nodes_) {
-    if (unreceived_nodes_.count(receiver_[rightNode])) {
+    if (unreceived_nodes_.count(receiver_[rightNode]) && reachable_[{rightNode, receiver_[rightNode]}]) {
       unreceived_nodes_.erase(receiver_[rightNode]);
-      CheckModelDistributionFinish();
     }
   }
   if (msg.meta.version > iteration_) { // if there are some unreceived nodes.
@@ -1087,16 +1095,17 @@ void Van::ProcessAskModelReceiver(Message msg) {
     for (int rightNode : right_nodes_) {
       // 10000 means that the minimum precsion for greed_rate_ is 0.0001
       int randNumber = rand() % 10000;
-      if (receiver_[rightNode] != UNMATCHED && lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
+      if (lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
           randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
         int newReceiver = RandomGetReceiver(rightNode);
+        if (newReceiver == receiver_[rightNode]) { continue; }
         unreceived_nodes_.insert(receiver_[rightNode]);
         receiver_[rightNode] = newReceiver;
         unreceived_nodes_.erase(receiver_[rightNode]);
       }
-      if (!reachable_[{rightNode, receiver_[rightNode]}]) { // reschedule
+      if (receiver_[rightNode] != QUIT && !reachable_[{rightNode, receiver_[rightNode]}]) { // reschedule
         minimum_model_distribution_num_++;
-      } else { // next time two nodes will request.
+      } else if (receiver_[rightNode] != QUIT) { // next time two nodes will request.
         minimum_model_distribution_num_ += 2;
       }
     }
@@ -1154,7 +1163,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     PS_VLOG(-1) << "model_aggregation_num: " << model_aggregation_num_
                 << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
                 << " unreceived_nodes.size: " << unreceived_nodes_.size();
-    mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_, &requestor]() -> bool {
+    mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
       return unreceived_nodes_.size() == 1;
@@ -1307,7 +1316,7 @@ void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set
   for (int leftNode : left_nodes_) {
     for (int rightNode : right_nodes_) {
       if (!reachable_[{leftNode, rightNode}]) {
-        edge_weight_[leftNode][rightNode] = -INF;
+        edge_weight_[leftNode][rightNode] = -INF / 2;
       }else if (lifetime_[leftNode][rightNode] == UNKNOWN) {
         edge_weight_[leftNode][rightNode] = avg;
       } else {
