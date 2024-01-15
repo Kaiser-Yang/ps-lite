@@ -8,7 +8,9 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 
+#include "dmlc/logging.h"
 #include "ps/base.h"
 #include "ps/internal/customer.h"
 #include "ps/internal/postoffice.h"
@@ -67,6 +69,14 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
       std::string node_host_ip =
           node.hostname + ":" + std::to_string(node.port);
       if (connected_nodes_.find(node_host_ip) == connected_nodes_.end()) {
+        if (getenv("ENABLE_LEMETHOD") != nullptr &&
+          atoi(getenv("ENABLE_LEMETHOD")) != 0 && node.id != Node::kEmpty) {
+          LEMETHOD_LOG(-1, "assign rank=", node.id, "to node", node.DebugString());
+          Connect(node);
+          Postoffice::Get()->UpdateHeartbeat(node.id, t);
+          connected_nodes_[node_host_ip] = node.id;
+          continue;
+        }
         CHECK_EQ(node.id, Node::kEmpty);
         int id = node.role == Node::SERVER
                      ? Postoffice::ServerRankToID(num_servers_)
@@ -162,6 +172,13 @@ void Van::UpdateLocalID(Message* msg, std::unordered_set<int>* deadnodes_set,
   for (size_t i = 0; i < ctrl.node.size(); ++i) {
     const auto& node = ctrl.node[i];
     if (my_node_.hostname == node.hostname && my_node_.port == node.port) {
+      if (getenv("ENABLE_LEMETHOD") != nullptr &&
+          atoi(getenv("ENABLE_LEMETHOD")) != 0 &&
+          getenv("DMLC_RANK") != nullptr) {
+        CHECK(my_node_.id == node.id) << my_node_.id << " vs " << node.id;
+        my_node_ = node;
+        continue;
+      }
       if (getenv("DMLC_RANK") == nullptr || my_node_.id == Meta::kEmpty) {
         my_node_ = node;
         std::string rank = std::to_string(Postoffice::IDtoRank(node.id));
@@ -290,6 +307,12 @@ void Van::Start(int customer_id) {
     CHECK(!(enableTsengine && enableLemethod)) <<
           "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
     if (enableLemethod) { // to get the connection relationship of all nodes
+      const char *dmlcRankVal = Environment::Get()->find("DMLC_RANK");
+      if (dmlcRankVal != nullptr) {
+        CHECK(CanToInteger(dmlcRankVal)) << "failed to convert DMLC_RANK to integer.";
+        int dmlcRank = atoi(dmlcRankVal);
+        CHECK(dmlcRank >= 0 && dmlcRank < Postoffice::Get()->num_workers()) << "DMLC_RANK outrange.";
+      }
       const char *lemothodConnectionTypeVal = Environment::Get()->find("LEMETHOD_CONNECTION_TYPE");
       if (lemothodConnectionTypeVal == nullptr) { // the default value of LEMETHOD_CONNECTION_TYPE
         lemothodConnectionTypeVal = "0";
@@ -299,7 +322,7 @@ void Van::Start(int customer_id) {
       CHECK(lemothodConnectionType >= 0 &&
             lemothodConnectionType <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
-      PS_VLOG(-1) << "set LEMETHOD_CONNECTION_TYPE: " << lemothodConnectionType;
+      LEMETHOD_LOG(-1, "set LEMETHOD_CONNECTION_TYPE:", lemothodConnectionType);
       int serverID = Postoffice::Get()->ServerRankToID(0);
       int workerID = 0;
       for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable_ each other
@@ -398,11 +421,12 @@ void Van::Start(int customer_id) {
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
+        LEMETHOD_LOG(-1, "max node id:", maxNodeID);
         for (int i = 0; i < maxNodeID; i++) {
           bandwidth_.emplace_back(std::vector<int>(maxNodeID, 0));
           lifetime_.emplace_back(std::vector<int>(maxNodeID, UNKNOWN));
-          edge_weight_ma_.emplace_back(std::vector<int>(maxNodeID, -INF));
-          edge_weight_md_.emplace_back(std::vector<int>(maxNodeID, -INF));
+          edge_weight_ma_.emplace_back(std::vector<int>(maxNodeID, -INF / 2));
+          edge_weight_md_.emplace_back(std::vector<int>(maxNodeID, -INF / 2));
         }
         receiver_ma_.resize(maxNodeID, UNKNOWN);
         receiver_md_.resize(maxNodeID, UNKNOWN);
@@ -461,6 +485,12 @@ void Van::Start(int customer_id) {
   if (!is_scheduler_) {
     // let the scheduler know myself
     Message msg;
+    if (getenv("ENABLE_LEMETHOD") != nullptr &&
+        atoi(getenv("ENABLE_LEMETHOD")) != 0 &&
+        getenv("DMLC_RANK") != nullptr) {
+      int rank = atoi(getenv("DMLC_RANK"));
+      my_node_.id = Postoffice::WorkerRankToID(rank);
+    }
     Node customer_specific_node = my_node_;
     customer_specific_node.customer_id = customer_id;
     msg.meta.recver = kScheduler;
@@ -635,6 +665,10 @@ void Van::Ask(int throughput, int last_recv_id, int version) {
 }
 
 bool Van::Reachable(int nodeaID, int nodebID) {
+  LEMETHOD_LOG(-1, "node A:", Postoffice::IDtoRank(nodeaID),
+               "node B:", Postoffice::IDtoRank(nodebID),
+               "reachable:", std::boolalpha,
+               reachable_[{nodeaID, nodebID}], std::noboolalpha);
   return reachable_[{nodeaID, nodebID}];
 }
 
@@ -1002,24 +1036,16 @@ void Van::ProcessAskModelReceiver(Message msg) {
   Postoffice* postoffice = Postoffice::Get();
   if (msg.meta.last_receiver != UNKNOWN) {
     std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
-    PS_VLOG(-1) << "detect bandwidth from " << requestor << " to "
-                << msg.meta.last_receiver << ": " << msg.meta.last_bandwidth;
+    LEMETHOD_LOG(-1, "detect bandwidth from", requestor, "to",
+                 msg.meta.last_receiver, ":", msg.meta.last_bandwidth);
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
   }
   {
-    std::unique_lock<std::mutex> locker{mu_};
-    if (msg.meta.version <= iteration_) {
-      rpl.meta.model_receiver = QUIT;
-      Send(rpl);
-      return;
-    }
-  }
-  {
     std::unique_lock<std::mutex> locker{mmdn_cv_mu_};
     model_distribution_num_++;
-    PS_VLOG(-1) << "model_distribution_num: " << model_distribution_num_
-                << " minimum_model_distribution_num: " << minimum_model_distribution_num_;
+    LEMETHOD_LOG(-1, "model_distribution_num:", model_distribution_num_,
+                 "minimum_model_distribution_num:", minimum_model_distribution_num_);
     mmdn_cv_.wait(locker, [this]() {
       return model_distribution_num_ == minimum_model_distribution_num_;
     });
@@ -1035,16 +1061,16 @@ void Van::ProcessAskModelReceiver(Message msg) {
   SendOrReschedule:
     // when the receiver is not connected with requestor, we try to reschedule.
     if (receiver_[requestor] != QUIT && !reachable_[{requestor, receiver_[requestor]}]) {
-      PS_VLOG(-1) << requestor << " cannot send model to " << receiver_[requestor] << ", so "
-                  << requestor << " will be rescheduled.";
+      LEMETHOD_LOG(-1, requestor, "cannot send model to", receiver_[requestor], ", so",
+                   requestor, "will be rescheduled.");
       receiver_[requestor] = UNKNOWN;
       locker1.unlock();
       locker2.unlock();
       locker3.unlock();
       ProcessAskModelReceiver(msg);
     } else {
-      PS_VLOG(-1) << "MODEL DISTRIBUTION sender: " << requestor
-                  << " receiver: " << receiver_[requestor];
+      LEMETHOD_LOG(-1, "MODEL DISTRIBUTION sender:", requestor,
+                   "receiver:", receiver_[requestor]);
       rpl.meta.model_receiver = receiver_[requestor];
       if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
       else { CheckModelDistributionFinish(); }
@@ -1052,7 +1078,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
     }
     return;
   }
-  PS_VLOG(-1) << requestor << " starts to schedule.";
+  LEMETHOD_LOG(-1, requestor, "starts to schedule.");
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1067,7 +1093,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
     right_nodes_.insert(psID);
   }
   if (left_nodes_.size() > right_nodes_.size()) {
-    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
+    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
     for (int leftNode : left_nodes_) { if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; } }
     for (int rightNode : right_nodes_) { if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = QUIT; } }
@@ -1095,19 +1121,26 @@ void Van::ProcessAskModelReceiver(Message msg) {
     for (int rightNode : right_nodes_) {
       // 10000 means that the minimum precsion for greed_rate_ is 0.0001
       int randNumber = rand() % 10000;
-      if (lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
+      if (receiver_[rightNode] != QUIT && lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
           randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
         int newReceiver = RandomGetReceiver(rightNode);
-        if (newReceiver == receiver_[rightNode]) { continue; }
-        unreceived_nodes_.insert(receiver_[rightNode]);
-        receiver_[rightNode] = newReceiver;
-        unreceived_nodes_.erase(receiver_[rightNode]);
+        if (newReceiver != receiver_[rightNode]) {
+          unreceived_nodes_.insert(receiver_[rightNode]);
+          receiver_[rightNode] = newReceiver;
+          unreceived_nodes_.erase(receiver_[rightNode]);
+        }
       }
       if (receiver_[rightNode] != QUIT && !reachable_[{rightNode, receiver_[rightNode]}]) { // reschedule
         minimum_model_distribution_num_++;
       } else if (receiver_[rightNode] != QUIT) { // next time two nodes will request.
         minimum_model_distribution_num_ += 2;
       }
+      LEMETHOD_LOG(-1, "rightNode:", rightNode,
+                   "receiver_[rightNode]:", receiver_[rightNode],
+                   "reachable_:", std::boolalpha, reachable_[{rightNode, receiver_[rightNode]}],
+                   std::noboolalpha,
+                   "minimum_model_distribution:",
+                   minimum_model_distribution_num_);
     }
   }
   goto SendOrReschedule;
@@ -1160,9 +1193,9 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       unreceived_nodes_.erase(requestor);
     }
     model_aggregation_num_++;
-    PS_VLOG(-1) << "model_aggregation_num: " << model_aggregation_num_
-                << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
-                << " unreceived_nodes.size: " << unreceived_nodes_.size();
+    LEMETHOD_LOG(-1, "model_aggregation_num:", model_aggregation_num_,
+                 "minimum_model_aggregation_num:", minimum_model_aggregation_num_,
+                 "unreceived_nodes.size:", unreceived_nodes_.size());
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
@@ -1188,13 +1221,11 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       Send(req);
       bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
-        PS_VLOG(-1) << "LOCAL AGGREGATION sender: " << requestor
-                    << " receiver: " << receiver_[requestor];
+        LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, "receiver:", receiver_[requestor]);
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
         Send(rpl);
       } else {
-        PS_VLOG(-1) << receiver_[requestor] << " rejected as a receiver, so"
-                    << requestor << " will be rescheduled.";
+        LEMETHOD_LOG(-1, receiver_[requestor], "rejected as a receiver, so", requestor, "will be rescheduled.");
         receiver_[requestor] = UNKNOWN;
         // when the receiver rejected to be a receiver, we need re-schedule the requestor.
         // we must release the locks, so the recursivation can lock again.
@@ -1203,8 +1234,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         ProcessAskLocalAggregation(msg);
       }
     } else {
-      PS_VLOG(-1) << "LOCAL AGGREGATION sender: " << requestor
-                  << " receiver: " << receiver_[requestor];
+      LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, " receiver:", receiver_[requestor]);
       rpl.meta.local_aggregation_receiver = receiver_[requestor];
       Send(rpl);
     }
@@ -1220,7 +1250,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     }
   }
   if (left_nodes_.size() >= right_nodes_.size()) {
-    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
+    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
     for (int leftNode : left_nodes_) {
       if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
@@ -1260,7 +1290,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       }
     }
     if (right_nodes_.size() <= left_nodes_.size()) {
-      GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_);
+      GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
       KM(right_nodes_, left_nodes_, edge_weight_, match_);
       for (int leftNode : left_nodes_) {
         if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
@@ -1310,18 +1340,23 @@ int Van::GetAvgBandwidth(std::unordered_set<int>& left_nodes_, std::unordered_se
   return avg;
 }
 
-void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_) {
+void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_,
+                        std::unordered_set<int>& right_nodes_,
+                        std::vector<std::vector<int>>& edge_weight_,
+                        bool match) {
   std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
   int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
   for (int leftNode : left_nodes_) {
     for (int rightNode : right_nodes_) {
-      if (!reachable_[{leftNode, rightNode}]) {
+      auto item = match ? std::pair<int, int>(leftNode, rightNode) :
+                          std::pair<int, int>(rightNode, leftNode);
+      if (!reachable_[{item.second, item.first}]) {
         edge_weight_[leftNode][rightNode] = -INF / 2;
-      }else if (lifetime_[leftNode][rightNode] == UNKNOWN) {
+      }else if (lifetime_[item.second][item.first] == UNKNOWN) {
         edge_weight_[leftNode][rightNode] = avg;
       } else {
         edge_weight_[leftNode][rightNode]
-        = bandwidth_[leftNode][rightNode];
+        = bandwidth_[item.second][item.first];
       }
     }
   }

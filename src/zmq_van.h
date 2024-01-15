@@ -105,8 +105,12 @@ class ZMQVan : public Van {
         !dmlc::GetEnv("ENABLE_LEMETHOD", false) && !dmlc::GetEnv("ENABLE_TSENGINE", false)) {
       return;
     }
+    // for the reason of the implementation,
+    // if there are one way from a to b, we must connect b to a, too.
+    // but we can still prevent b send model data to a.
     if (dmlc::GetEnv("ENABLE_LEMETHOD", false) && my_node_.role != Node::SCHEDULER &&
-        node.role != Node::SCHEDULER && !Reachable(my_node_.id, node.id)) {
+        node.role != Node::SCHEDULER && !Reachable(my_node_.id, node.id) &&
+        !Reachable(node.id, my_node_.id)) {
       return;
     }
     void *sender = zmq_socket(context_, ZMQ_DEALER);
