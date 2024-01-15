@@ -585,7 +585,7 @@ class KVServer : public SimpleApp {
         Postoffice::Get()->van()->Send(msg);
         Postoffice::Get()->van()->Wait_for_finished();
         ends = clock();
-        // this is obvious a but, because when it takes more than 1 sec, the throughput will be 0.
+        // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
         // in order to solve the bug, I use 1000 as the divided number rather than 1.
         // although the result may overflow in some case
         // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
@@ -893,6 +893,10 @@ void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
       Postoffice::Get()->van()->Send(msg);
       Postoffice::Get()->van()->Wait_for_finished();
       ends = clock();
+      // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
+      // in order to solve the bug, I use 1000 as the divided number rather than 1.
+      // although the result may overflow in some case
+      // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
       throughput = (int) (1000/((double)(ends - starts) / CLOCKS_PER_SEC));
       last_recv_id = receiver;
     }
@@ -1111,7 +1115,7 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
     Postoffice::Get()->van()->Send(msg);
     Postoffice::Get()->van()->WaitForModelDistributionReply();
     endTime = clock();
-    lastBandwidth = (long long)(startTime - endTime) / CLOCKS_PER_SEC;
+    lastBandwidth = (int)(startTime - endTime);
     lastReceiver = receiver;
   }
 }
