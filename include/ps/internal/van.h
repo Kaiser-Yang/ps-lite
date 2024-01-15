@@ -18,6 +18,7 @@
 #include "ps/base.h"
 #include "ps/internal/message.h"
 #include "my_thread_pool.h"
+static std::mutex log_mu_;
 namespace ps {
 class Resender;
 class PBMeta;
@@ -277,7 +278,8 @@ class Van {
   /* Check if a string can be converted to a integer, note this function will not check the bound. */
   bool CanToInteger(const char *str);
 
-  void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_, std::vector<std::vector<int>>& edge_weight_);
+  void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_,
+                     std::vector<std::vector<int>>& edge_weight_, bool match = true);
 
   void AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes);
 
