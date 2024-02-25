@@ -279,7 +279,7 @@ class Van {
   bool CanToInteger(const char *str);
 
   void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_,
-                     std::vector<std::vector<int>>& edge_weight_, bool match = true);
+                     std::vector<std::vector<int>>& edge_weight_, bool matched = true);
 
   void AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes);
 
@@ -298,7 +298,16 @@ class Van {
              int startNode, int maxID);
 
   void KM(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes,
-          std::vector<std::vector<int>> &edgeWeight, std::vector<int> &receiver);
+          std::vector<std::vector<int>> &edgeWeight, std::vector<int> &match);
+
+  bool FindAugmentedPath(int leftNode, std::unordered_set<int> &rightNodes,
+                         std::vector<std::vector<bool>> &connected, std::vector<int> &match, std::vector<bool> &vis);
+
+  void Hungrian(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes, 
+               std::vector<std::vector<bool>> &connected, std::vector<int> &match, int &matchNum);
+
+  void MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes,
+                             std::vector<std::vector<int>> &edgeWeight, std::vector<int> &match, bool matched = true);
 
   void ProcessAskAsReceiver(Message *msg);
 

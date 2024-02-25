@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -665,10 +666,6 @@ void Van::Ask(int throughput, int last_recv_id, int version) {
 }
 
 bool Van::Reachable(int nodeaID, int nodebID) {
-  LEMETHOD_LOG(-1, "node A:", Postoffice::IDtoRank(nodeaID),
-               "node B:", Postoffice::IDtoRank(nodebID),
-               "reachable:", std::boolalpha,
-               reachable_[{nodeaID, nodebID}], std::noboolalpha);
   return reachable_[{nodeaID, nodebID}];
 }
 
@@ -1213,8 +1210,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   std::lock(locker1, locker2);
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
-    CheckModelAggregationFinish();
-    if (!reachable_[{requestor, receiver_[requestor]}]) { receiver_[requestor] = postoffice->ServerRankToID(0); }
+    // if (!reachable_[{requestor, receiver_[requestor]}]) { receiver_[requestor] = postoffice->ServerRankToID(0); }
     if (receiver_[requestor] != postoffice->ServerRankToID(0)){
       req.meta.recver = receiver_[requestor];
       req.meta.control.cmd = Control::ASK_AS_RECEIVER;
@@ -1223,6 +1219,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (ok) {
         LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, "receiver:", receiver_[requestor]);
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
+        CheckModelAggregationFinish();
         Send(rpl);
       } else {
         LEMETHOD_LOG(-1, receiver_[requestor], "rejected as a receiver, so", requestor, "will be rescheduled.");
@@ -1234,8 +1231,9 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         ProcessAskLocalAggregation(msg);
       }
     } else {
-      LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, " receiver:", receiver_[requestor]);
+      LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, "receiver:", receiver_[requestor]);
       rpl.meta.local_aggregation_receiver = receiver_[requestor];
+      CheckModelAggregationFinish();
       Send(rpl);
     }
     return;
@@ -1249,33 +1247,35 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       right_nodes_.insert(workerID);
     }
   }
-  if (left_nodes_.size() >= right_nodes_.size()) {
+  if (right_nodes_.size() <= left_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
-    KM(right_nodes_, left_nodes_, edge_weight_, match_);
+    // KM(right_nodes_, left_nodes_, edge_weight_, match_);
+    MaxMinEdgeWeightMatch(right_nodes_, left_nodes_, edge_weight_, match_, false);
     for (int leftNode : left_nodes_) {
       if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
     }
   } else {
     GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
-    KM(left_nodes_, right_nodes_, edge_weight_, match_);
+    // KM(left_nodes_, right_nodes_, edge_weight_, match_);
+    MaxMinEdgeWeightMatch(left_nodes_, right_nodes_, edge_weight_, match_);
     for (int rightNode : right_nodes_) { receiver_[rightNode] = match_[rightNode]; }
-    int maxScore = -1, toLeftNode = UNKNOWN, score = -INF;
+    int maxScore = std::numeric_limits<int>::min(), toLeftNode = UNKNOWN, score = std::numeric_limits<int>::max();
     {
       // ProcessAskModelReceiver may be running, so there is need to lock.
       std::lock_guard<std::mutex> locker3{mu_on_bw_lt_};
       int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
       while(left_nodes_.size() < right_nodes_.size()) {
-        maxScore = -1; toLeftNode = UNKNOWN, score = -INF;
+        maxScore = std::numeric_limits<int>::min(); toLeftNode = UNKNOWN, score = std::numeric_limits<int>::max();
         for (int rightNode : right_nodes_) {
           if (receiver_[rightNode] != UNKNOWN) { continue; }
-          score = -INF;
+          score = std::numeric_limits<int>::max();
           for (int anotherRightNode : right_nodes_) {
             if (anotherRightNode == rightNode || !reachable_[{anotherRightNode, rightNode}]) { continue; }
             if (lifetime_[anotherRightNode][rightNode] == UNKNOWN) {
-              score = std::max(score, avg);
+              score = std::min(score, avg);
               continue;
             }
-            score = std::max(score, bandwidth_[anotherRightNode][rightNode]);
+            score = std::min(score, bandwidth_[anotherRightNode][rightNode]);
           }
           if (score > maxScore) {
             maxScore = score;
@@ -1287,22 +1287,28 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         left_nodes_.insert(toLeftNode);
         right_nodes_.erase(toLeftNode);
         receiver_[toLeftNode] = UNKNOWN;
+        LEMETHOD_LOG(-1, "move", toLeftNode, "to left nodes.");
       }
     }
     if (right_nodes_.size() <= left_nodes_.size()) {
       GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
-      KM(right_nodes_, left_nodes_, edge_weight_, match_);
+      // KM(right_nodes_, left_nodes_, edge_weight_, match_);
+      MaxMinEdgeWeightMatch(right_nodes_, left_nodes_, edge_weight_, match_, false);
       for (int leftNode : left_nodes_) {
         if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
       }
     } else {
       GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
-      KM(left_nodes_, right_nodes_, edge_weight_, match_);
+      // KM(left_nodes_, right_nodes_, edge_weight_, match_);
+      MaxMinEdgeWeightMatch(left_nodes_, right_nodes_, edge_weight_, match_);
       for (int rightNode : right_nodes_) {
         if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
         else { receiver_[rightNode] = postoffice->ServerRankToID(0); }
       }
     }
+  }
+  for (const int &rightNode : right_nodes_) {
+    if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = postoffice->ServerRankToID(0); }
   }
   {
     std::unique_lock<std::mutex> locker{mman_cv_mu_};
@@ -1343,13 +1349,13 @@ int Van::GetAvgBandwidth(std::unordered_set<int>& left_nodes_, std::unordered_se
 void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_,
                         std::unordered_set<int>& right_nodes_,
                         std::vector<std::vector<int>>& edge_weight_,
-                        bool match) {
+                        bool matched) {
   std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
   int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
   for (int leftNode : left_nodes_) {
     for (int rightNode : right_nodes_) {
-      auto item = match ? std::pair<int, int>(leftNode, rightNode) :
-                          std::pair<int, int>(rightNode, leftNode);
+      auto &&item = matched ? std::pair<int, int>(leftNode, rightNode) :
+                              std::pair<int, int>(rightNode, leftNode);
       if (!reachable_[{item.second, item.first}]) {
         edge_weight_[leftNode][rightNode] = -INF / 2;
       }else if (lifetime_[item.second][item.first] == UNKNOWN) {
@@ -1462,6 +1468,82 @@ void Van::KM(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightN
   for (int leftNode : leftNodes) {
     KMBfs(leftNodes, rightNodes, edgeWeight, match, leftWeight, rightWeight, leftNode, maxID);
   }
+}
+
+bool Van::FindAugmentedPath(int leftNode, std::unordered_set<int> &rightNodes,
+                            std::vector<std::vector<bool>> &connected,  std::vector<int> &match, std::vector<bool> &vis) {
+  for (const int &rightNode : rightNodes) {
+    if (vis[rightNode] || !connected[leftNode][rightNode]) { continue; }
+    vis[rightNode] = true;
+    if (match[rightNode] == UNMATCHED ||
+        FindAugmentedPath(match[rightNode], rightNodes, connected, match, vis)) {
+      match[rightNode] = leftNode;
+      return true;
+    }
+  }
+  return false;
+}
+
+void Van::Hungrian(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes, 
+                  std::vector<std::vector<bool>> &connected, std::vector<int> &match, int &matchNum) {
+  std::vector<bool> vis;
+  matchNum = 0;
+  int maxRightNodeId = 0;
+  for (const int &rightNode : rightNodes) {
+    maxRightNodeId = std::max(maxRightNodeId, rightNode);
+    match[rightNode] = UNMATCHED;
+  }
+  vis.resize(maxRightNodeId, false);
+  for (const int &leftNode : leftNodes) {
+    for (const int &rightNode : rightNodes) { vis[rightNode] = false; }
+    matchNum += FindAugmentedPath(leftNode, rightNodes, connected, match, vis);
+  }
+}
+
+void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes,
+                                std::vector<std::vector<int>> &edgeWeight, std::vector<int> &match, bool matched) {
+  std::vector<std::vector<bool>> connected(edgeWeight.size());
+  for (int i = 0; i < connected.size(); i++) { connected[i].resize(edgeWeight[i].size(), false); }
+  int l = std::numeric_limits<int>::max(), r = std::numeric_limits<int>::min(), mid = 0;
+  for (const int &leftNode : leftNodes) {
+    for (const int &rightNode : rightNodes) {
+      if ((matched && Reachable(rightNode, leftNode)) ||
+          (!matched && Reachable(leftNode, rightNode))) {
+        connected[leftNode][rightNode] = true;
+        l = std::min(l, edgeWeight[leftNode][rightNode]);
+        r = std::max(r, edgeWeight[leftNode][rightNode]);
+      }
+    }
+  }
+  int matchNum = 0;
+  Hungrian(leftNodes, rightNodes, connected, match, matchNum);
+  LEMETHOD_LOG(-1, "match_num:", matchNum, "bisect_left:", l, "bisect_right:", r);
+  if (matchNum == 0) { return; }
+  int tempMatchNum = 0;
+  std::vector<std::vector<bool>> tempConnected;
+  while (l <= r) {
+    mid = (l + r) >> 1;
+    tempConnected = connected;
+    for (const int &leftNode : leftNodes) {
+      for (const int &rightNode : rightNodes) {
+        if (edgeWeight[leftNode][rightNode] >= mid) { continue; }
+        tempConnected[leftNode][rightNode] = false;
+      }
+    }
+    Hungrian(leftNodes, rightNodes, tempConnected, match, tempMatchNum);
+    if (tempMatchNum >= matchNum) { l = mid + 1; }
+    else { r = mid - 1; }
+  }
+  LEMETHOD_LOG(-1, "the limit is:", r);
+  for (const int &leftNode : leftNodes) {
+    for (const int &rightNode : rightNodes) {
+      if (edgeWeight[leftNode][rightNode] >= r) { continue; }
+      connected[leftNode][rightNode] = false;
+    }
+  }
+  matchNum = 0;
+  Hungrian(leftNodes, rightNodes, connected, match, matchNum);
+  LEMETHOD_LOG(-1, "the final matchNum:", matchNum);
 }
 
 bool Van::CanToInteger(const char *str) {
