@@ -344,6 +344,7 @@ void Van::Start(int customer_id) {
       std::istringstream iss;
       int nodeRankA, nodeRankB;
       while (std::getline(ifs, line)) {
+        if (line.empty()) { continue; } // found empty lines, just skip
         iss = std::istringstream(line);
         iss >> cmd;
         if (cmd == "ADD_CONNECTION") {
