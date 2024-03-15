@@ -347,22 +347,17 @@ void Van::Start(int customer_id) {
         iss = std::istringstream(line);
         iss >> cmd;
         if (cmd == "ADD_CONNECTION") {
-          CHECK(lemothodConnectionType == USER_DESIGNED_CONNECTION_TYPE) <<
-            "make sure LEMETHOD_CONNECTION_TYPE is 2 while using ADD_CONNECTION";
           iss >> nodeRankA >> nodeRankB;
+          if (lemothodConnectionType != USER_DESIGNED_CONNECTION_TYPE) { continue; }
           CHECK(!iss.fail()) << "make sure the NODE_RANK is an integer.";
           CHECK(nodeRankA < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
           CHECK(nodeRankB < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
           reachable_[{Postoffice::Get()->WorkerRankToID(nodeRankA), Postoffice::Get()->WorkerRankToID(nodeRankB)}] = true;
         } else if (cmd == "SET_SCHEDULE_RATIO") {
-          CHECK(schedule_ratio_ == UNKNOWN) << "multiple SET_SCHEDULE_RATIO commands.";
-          CHECK(minimum_model_aggregation_num_ == UNKNOWN);
           iss >> schedule_ratio_;
           CHECK(!iss.fail()) << "make sure SCHEDULE_RATIO is a number.";
           CHECK(schedule_ratio_ >= 0 && schedule_ratio_ <= 1) << "SCHEDULE_RATIO must be in [0, 1].";
         } else if (cmd == "SET_SCHEDULE_NUM") {
-          CHECK(schedule_ratio_ == UNKNOWN) << "SET_SCHEDULE_RATIO and SET_SCHEDULE_NUM cannot use at same time.";
-          CHECK(schedule_num_ == UNKNOWN) << "multiple SET_SCHEDULE_NUM commands.";
           iss >> schedule_num_;
           CHECK(!iss.fail()) << "make sure SCHEDULE_NUM is a integer.";
           CHECK(schedule_num_ >= 1 && schedule_num_ <= Postoffice::Get()->num_workers())
