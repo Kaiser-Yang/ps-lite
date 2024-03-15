@@ -201,7 +201,7 @@ class Postoffice {
 template <class ...Args>
 void LemethodLog(int x, const char *filename, int line, Args ...args) {
 #ifndef LEMETHOD_NO_DEBUG
-  if (x > Postoffice::Get()->verbose()) { return; }
+  if (x < Postoffice::Get()->verbose()) { return; }
   std::lock_guard<std::mutex> locker{::log_mu_};
   std::cout << "[" << dmlc::DateLogger().HumanDate() << "]" << " ";
   std::cout << filename << ":" << line <<": ";
