@@ -213,7 +213,7 @@ class Van {
   bool can_be_receiver_ = true;
   std::map<std::pair<int, int>, bool> reachable_;
 
-  std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_;
+  std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_, receiving_nodes_;
   std::mutex mu_ma_, mu_md_, mu_on_bw_lt_;
   std::mutex mutex_on_km_ma_, mutex_on_km_md_;
   std::unordered_set<int> left_nodes_ma_, right_nodes_ma_, left_nodes_md_, right_nodes_md_;
@@ -320,6 +320,8 @@ class Van {
   void ProcessAskLocalAggregationReply(Message *msg);
 
   void ProcessAskAsReceiverReply(Message *msg);
+
+  void ProcessFinishReceivingLocalAggregation(Message *msg);
 
   void ProcessModelDistributionReply(Message *msg);
 
