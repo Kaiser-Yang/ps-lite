@@ -663,6 +663,11 @@ void KVServer<Val>::Process(const Message& msg) {
       data.lens = msg.data[2];
       CHECK_EQ(data.lens.size(), data.keys.size());
     }
+    if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+      if (msg.meta.control.cmd == Control::LOCAL_AGGREGATION) {
+        Postoffice::Get()->van()->DecreaseNumAsReceiver();
+      }
+    }
   }
   CHECK(request_handle_);
   request_handle_(meta, data, this);
@@ -974,12 +979,11 @@ void KVWorker<Val>::Process(const Message& msg) {
       }
       // for self-sending msg, we need GetLocalAggregationReceiver
       // and we need do this in another thread so that we can receive LOCAL_AGGREGATION from other workers to prevent from deadlock
-      // if we do this in current thread, deadlock will caused by WaitForLocalAggregationFinish()
+      // if we do this in current thread, deadlock will be caused by WaitForLocalAggregationFinish()
       // because current thread is blocked we can not receive, WaitForLocalAggregationFinish() will not end forever.
       int cmd = msg.meta.head, key = msg.meta.key, ts = msg.meta.timestamp;
       threadPool_.enqueue([this, ts, cmd, data, key] () {
         int receiver = Postoffice::Get()->van()->GetLocalAggregationReceiver();
-        // std::cout << "LOCAL AGGREGATION sender: " << Postoffice::Get()->van()->my_node().id << " receiver: " << receiver << std::endl;
         Postoffice::Get()->van()->WaitForLocalAggregationFinish();
         Send(ts, true, false, cmd, data, false, receiver, key);
         std::lock_guard<std::mutex> locker{mu_};

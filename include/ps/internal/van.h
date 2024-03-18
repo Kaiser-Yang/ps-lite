@@ -321,7 +321,7 @@ class Van {
 
   void ProcessAskAsReceiverReply(Message *msg);
 
-  void ProcessFinishReceivingLocalAggregation(Message *msg);
+  void ProcessFinishReceivingLocalAggregation(Message msg);
 
   void ProcessModelDistributionReply(Message *msg);
 
