@@ -228,7 +228,7 @@ class Van {
   bool receive_model_distribution_reply_ = false;
   static constexpr int INF = 0x3f3f3f3f;
   static constexpr double DEFAULT_GREED_RATE = 0.5;
-  static constexpr int BANDWIDTH_EXPIRATION_TIME = 5;
+  int bandwidthExpirationTime_ = 5;
   static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
   /* The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known. */
   int schedule_num_ = UNKNOWN;
