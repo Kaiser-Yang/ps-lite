@@ -361,9 +361,12 @@ void Van::Start(int customer_id) {
           CHECK(schedule_ratio_ >= 0 && schedule_ratio_ <= 1) << "SCHEDULE_RATIO must be in [0, 1].";
         } else if (cmd == "SET_SCHEDULE_NUM") {
           iss >> schedule_num_;
-          CHECK(!iss.fail()) << "make sure SCHEDULE_NUM is a integer.";
+          CHECK(!iss.fail()) << "make sure SCHEDULE_NUM is an integer.";
           CHECK(schedule_num_ >= 1 && schedule_num_ <= Postoffice::Get()->num_workers())
             << "SCHEDULE_NUM must be in [1, DMLC_NUM_WORKER].";
+        } else if (cmd == "SET_BANDWIDTH_EXPIRATION") {
+          iss >> bandwidthExpirationTime_;
+          CHECK(!iss.fail()) << "make sure bandwidthExpirationTime is an integer";
         }
       };
       if (schedule_num_ == UNKNOWN) {
@@ -1406,7 +1409,7 @@ void Van::AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set
 void Van::CheckExpiration() {
   for (int requestorID = 8; requestorID < lifetime_.size(); requestorID++) {
     for (auto &lifetime : lifetime_[requestorID]){
-      if(lifetime != UNKNOWN && iteration_ - lifetime > BANDWIDTH_EXPIRATION_TIME){
+      if(lifetime != UNKNOWN && iteration_ - lifetime > bandwidthExpirationTime_){
           lifetime = UNKNOWN;
       }
     }
