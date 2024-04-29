@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
+option(LEMETHOD_NO_DEBUG "whether or not use lemethod debug." off)
+if (LEMETHOD_NO_DEBUG)
+  add_compile_definitions(LEMETHOD_NO_DEBUG)
+endif()
+
 add_library(pslite)
 
 if(POLICY CMP0074)  # Support Protobuf_ROOT etc environment variables on CMake 3.12+
@@ -75,8 +80,3 @@ endif()
 file(GLOB_RECURSE SOURCE "src/*.cc")
 target_include_directories(pslite PUBLIC "${PROJECT_SOURCE_DIR}/include/")
 target_sources(pslite PRIVATE ${SOURCE})
-
-option(LEMETHOD_NO_DEBUG "whether or not use lemethod debug." off)
-if (LEMETHOD_NO_DEBUG)
-  add_compile_definitions(LEMETHOD_NO_DEBUG)
-endif()
