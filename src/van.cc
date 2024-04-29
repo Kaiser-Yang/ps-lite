@@ -1072,6 +1072,10 @@ void Van::ProcessAskModelReceiver(Message msg) {
       if (unreceived_nodes_.count(maxBandwidthNode)) { 
         unreceived_nodes_.erase(maxBandwidthNode);
       }
+      // make sure all the waiting nodes are awake.
+      mmdn_cv_.wait(locker3, [this]() {
+        return minimum_model_distribution_num_ == 0;
+      });
       if (maxBandwidthNode == QUIT) { minimum_model_distribution_num_ = 1; }
       else { minimum_model_distribution_num_ = 2; }
     }
