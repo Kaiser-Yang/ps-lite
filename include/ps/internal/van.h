@@ -7,6 +7,7 @@
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -257,6 +258,7 @@ class Van {
   /* The max number of threads, its default value is workers_num + 1. */
   int max_thread_num_;
 
+  int lemethod_connection_type_ = PS_CONNECTION_TYPE;
   int iteration_ = 0;
   int model_receiver_ = UNKNOWN;
   int ask_as_receiver_status_ = false;
