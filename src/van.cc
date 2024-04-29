@@ -320,11 +320,11 @@ void Van::Start(int customer_id) {
         lemothodConnectionTypeVal = "0";
       }
       CHECK(CanToInteger(lemothodConnectionTypeVal)) << "failed to convert LEMETHOD_CONNECTION_TYPE to integer.";
-      int lemothodConnectionType = atoi(lemothodConnectionTypeVal);
-      CHECK(lemothodConnectionType >= 0 &&
-            lemothodConnectionType <= 2) <<
+      lemethod_connection_type_ = atoi(lemothodConnectionTypeVal);
+      CHECK(lemethod_connection_type_ >= 0 &&
+            lemethod_connection_type_ <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
-      LEMETHOD_LOG(-1, "set LEMETHOD_CONNECTION_TYPE:", lemothodConnectionType);
+      LEMETHOD_LOG(-1, "set LEMETHOD_CONNECTION_TYPE:", lemethod_connection_type_);
       int serverID = Postoffice::Get()->ServerRankToID(0);
       int workerID = 0;
       for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable_ each other
@@ -350,7 +350,7 @@ void Van::Start(int customer_id) {
         iss >> cmd;
         if (cmd == "ADD_CONNECTION") {
           iss >> nodeRankA >> nodeRankB;
-          if (lemothodConnectionType != USER_DESIGNED_CONNECTION_TYPE) { continue; }
+          if (lemethod_connection_type_ != USER_DESIGNED_CONNECTION_TYPE) { continue; }
           CHECK(!iss.fail()) << "make sure the NODE_RANK is an integer.";
           CHECK(nodeRankA < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
           CHECK(nodeRankB < Postoffice::Get()->num_workers()) << "make sure NODE_RANK is less than DMLC_NUM_WORKER";
@@ -374,7 +374,7 @@ void Van::Start(int customer_id) {
         schedule_num_ = std::max((int)(Postoffice::Get()->num_workers() * schedule_ratio_), 1);
       }
       minimum_model_aggregation_num_ = schedule_num_;
-      if (lemothodConnectionType == COMPLETE_CONNECTION_TYPE) {
+      if (lemethod_connection_type_ == COMPLETE_CONNECTION_TYPE) {
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           for (int j = 0; j < Postoffice::Get()->num_workers(); j++) {
             reachable_[{Postoffice::Get()->WorkerRankToID(i), Postoffice::Get()->WorkerRankToID(j)}] = true;
@@ -1056,6 +1056,24 @@ void Van::ProcessAskModelReceiver(Message msg) {
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
   std::unique_lock<std::mutex> locker3(mmdn_cv_mu_, std::defer_lock);
   std::lock(locker1, locker2, locker3);
+  if (lemethod_connection_type_ == PS_CONNECTION_TYPE) {
+    if (msg.meta.sender != postoffice->ServerRankToID(0)) {
+      receiver_[rpl.meta.sender] = QUIT;
+    } else {
+      int maxBandwidth = std::numeric_limits<int>::min();
+      int maxBandwidthNode = QUIT;
+      for (auto node : unreceived_nodes_) {
+        if (bandwidth_[rpl.meta.sender][node] > maxBandwidth) {
+          maxBandwidth = bandwidth_[rpl.meta.sender][node];
+          maxBandwidthNode = node;
+        }
+      }
+      if (unreceived_nodes_.count(maxBandwidthNode)) { 
+        unreceived_nodes_.erase(maxBandwidthNode);
+      }
+      receiver_[rpl.meta.sender] = maxBandwidthNode;
+    }
+  }
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
     // when the receiver is not connected with requestor, we try to reschedule.
@@ -1163,7 +1181,7 @@ void Van::CheckModelAggregationFinish() {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
     receiver_[Postoffice::Get()->WorkerRankToID(i)] = UNKNOWN;
   }
-  // server may be in receiving_nodes_, so we need add it to unrecieved_nodes_ manually.
+  // server may be in receiving_nodes_, so we need add it to unreceived_nodes_ manually.
   unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
   receiving_nodes_.clear();
 }
