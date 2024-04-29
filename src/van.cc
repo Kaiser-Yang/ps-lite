@@ -1072,6 +1072,8 @@ void Van::ProcessAskModelReceiver(Message msg) {
         unreceived_nodes_.erase(maxBandwidthNode);
       }
       receiver_[rpl.meta.sender] = maxBandwidthNode;
+      if (maxBandwidthNode == QUIT) { minimum_model_distribution_num_ = 1; }
+      else { minimum_model_distribution_num_ = 2; }
     }
   }
   if (receiver_[requestor] != UNKNOWN) {
