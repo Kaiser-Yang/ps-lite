@@ -580,16 +580,18 @@ class KVServer : public SimpleApp {
         if (kvs.lens.size()) {
           msg.AddData(kvs.lens);
         }
-        clock_t starts, ends;
-        starts = clock();
+        // the origin codes are wrong,
+        // because clock will not count the time when the process is sleeping
+        time_t starts, ends;
+        starts = time(nullptr);
         Postoffice::Get()->van()->Send(msg);
         Postoffice::Get()->van()->Wait_for_finished();
-        ends = clock();
+        ends = time(nullptr);
         // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
         // in order to solve the bug, I use 1000 as the divided number rather than 1.
         // although the result may overflow in some case
         // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
-        throughput = (int) (1000/((double)(ends - starts) / CLOCKS_PER_SEC));
+        throughput = (int) (ends - starts);
         last_recv_id = receiver;
       }
     }
@@ -893,16 +895,18 @@ void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
       if (kvs.lens.size()) {
           msg.AddData(kvs.lens);
       }
-      clock_t starts, ends;
-      starts = clock();
+      // the origin codes are wrong,
+      // because clock will not count the time when the process is sleeping
+      time_t starts, ends;
+      starts = time(nullptr);
       Postoffice::Get()->van()->Send(msg);
       Postoffice::Get()->van()->Wait_for_finished();
-      ends = clock();
+      ends = time(nullptr);
       // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
       // in order to solve the bug, I use 1000 as the divided number rather than 1.
       // although the result may overflow in some case
       // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
-      throughput = (int) (1000/((double)(ends - starts) / CLOCKS_PER_SEC));
+      throughput = (int) (ends - starts);
       last_recv_id = receiver;
     }
   }
@@ -1114,11 +1118,13 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
     receiver = Postoffice::Get()->van()->GetModelReceiver(lastBandwidth, lastReceiver, reqMeta.version);
     if (receiver == ps::Van::QUIT) { break; }
     msg.meta.recver = receiver;
-    clock_t startTime, endTime;
-    startTime = clock();
+    // the origin codes are wrong,
+    // because clock will not count the time when the process is sleeping
+    time_t startTime, endTime;
+    startTime = time(nullptr);
     Postoffice::Get()->van()->Send(msg);
     Postoffice::Get()->van()->WaitForModelDistributionReply();
-    endTime = clock();
+    endTime = time(nullptr);
     lastBandwidth = (int)(startTime - endTime);
     lastReceiver = receiver;
   }
