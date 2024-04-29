@@ -1057,21 +1057,21 @@ void Van::ProcessAskModelReceiver(Message msg) {
   std::unique_lock<std::mutex> locker3(mmdn_cv_mu_, std::defer_lock);
   std::lock(locker1, locker2, locker3);
   if (lemethod_connection_type_ == PS_CONNECTION_TYPE) {
-    if (msg.meta.sender != postoffice->ServerRankToID(0)) {
-      receiver_[rpl.meta.sender] = QUIT;
+    if (requestor != postoffice->ServerRankToID(0)) {
+      receiver_[requestor] = QUIT;
     } else {
       int maxBandwidth = std::numeric_limits<int>::min();
       int maxBandwidthNode = QUIT;
       for (auto node : unreceived_nodes_) {
-        if (bandwidth_[rpl.meta.sender][node] > maxBandwidth) {
-          maxBandwidth = bandwidth_[rpl.meta.sender][node];
+        if (bandwidth_[requestor][node] > maxBandwidth) {
+          maxBandwidth = bandwidth_[requestor][node];
           maxBandwidthNode = node;
         }
       }
+      receiver_[requestor] = maxBandwidthNode;
       if (unreceived_nodes_.count(maxBandwidthNode)) { 
         unreceived_nodes_.erase(maxBandwidthNode);
       }
-      receiver_[rpl.meta.sender] = maxBandwidthNode;
       if (maxBandwidthNode == QUIT) { minimum_model_distribution_num_ = 1; }
       else { minimum_model_distribution_num_ = 2; }
     }
