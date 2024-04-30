@@ -243,14 +243,8 @@ class Van {
   /* The minimum num of nodes participating one scheduling of model aggregation. */
   int minimum_model_aggregation_num_ = UNKNOWN;
 
-  /* How many nodes have requestes for model distribution in one scheduling. */
-  int model_distribution_num_ = 0;
-
-  /* The minimum num of nodes participating one scheduling of model distribution. */
-  int minimum_model_distribution_num_ = 1;
-
   std::mutex mmdn_cv_mu_, mman_cv_mu_;
-  std::condition_variable mman_cv_, mmdn_cv_;
+  std::condition_variable mman_cv_;
 
   /* The probability that one node will not choose its receiver randomly. */
   double greed_rate_;

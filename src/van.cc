@@ -1005,7 +1005,6 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 void Van::CheckModelDistributionFinish() {
   num_md_++;
   if (num_md_ != Postoffice::Get()->num_workers() + 1) { return; }
-  minimum_model_distribution_num_ = 1;
   auto &unreceived_nodes_ = unreceived_nodes_md_;
   auto &receiver_ = receiver_md_;
   num_md_ = 0;
@@ -1040,18 +1039,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
   }
-  {
-    std::unique_lock<std::mutex> locker{mmdn_cv_mu_};
-    model_distribution_num_++;
-    LEMETHOD_LOG(-1, "model_distribution_num:", model_distribution_num_,
-                 "minimum_model_distribution_num:", minimum_model_distribution_num_);
-    mmdn_cv_.wait(locker, [this]() {
-      return model_distribution_num_ == minimum_model_distribution_num_;
-    });
-    model_distribution_num_--;
-    minimum_model_distribution_num_--;
-    mmdn_cv_.notify_all();
-  }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
   std::unique_lock<std::mutex> locker3(mmdn_cv_mu_, std::defer_lock);
@@ -1072,12 +1059,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
       if (unreceived_nodes_.count(maxBandwidthNode)) { 
         unreceived_nodes_.erase(maxBandwidthNode);
       }
-      // make sure all the waiting nodes are awake.
-      mmdn_cv_.wait(locker3, [this]() {
-        return minimum_model_distribution_num_ == 0;
-      });
-      if (maxBandwidthNode == QUIT) { minimum_model_distribution_num_ = 1; }
-      else { minimum_model_distribution_num_ = 2; }
     }
   }
   if (receiver_[requestor] != UNKNOWN) {
@@ -1129,11 +1110,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
     }
   }
 
-  // make sure all the waiting nodes are awake.
-  mmdn_cv_.wait(locker3, [this]() {
-    return minimum_model_distribution_num_ == 0;
-  });
-  mmdn_cv_.notify_all();
   for (int rightNode : right_nodes_) {
     if (unreceived_nodes_.count(receiver_[rightNode]) && reachable_[{rightNode, receiver_[rightNode]}]) {
       unreceived_nodes_.erase(receiver_[rightNode]);
@@ -1153,17 +1129,10 @@ void Van::ProcessAskModelReceiver(Message msg) {
           unreceived_nodes_.erase(receiver_[rightNode]);
         }
       }
-      if (receiver_[rightNode] != QUIT && !reachable_[{rightNode, receiver_[rightNode]}]) { // reschedule
-        minimum_model_distribution_num_++;
-      } else if (receiver_[rightNode] != QUIT) { // next time two nodes will request.
-        minimum_model_distribution_num_ += 2;
-      }
       LEMETHOD_LOG(-1, "rightNode:", rightNode,
                    "receiver_[rightNode]:", receiver_[rightNode],
                    "reachable_:", std::boolalpha, reachable_[{rightNode, receiver_[rightNode]}],
-                   std::noboolalpha,
-                   "minimum_model_distribution:",
-                   minimum_model_distribution_num_);
+                   std::noboolalpha);
     }
   }
   goto SendOrReschedule;
