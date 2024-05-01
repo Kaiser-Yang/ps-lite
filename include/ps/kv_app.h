@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <ctime>
 #include <thread>
+#include <chrono>
 #include "ps/base.h"
 #include "ps/simple_app.h"
 #include "my_thread_pool.h"
@@ -582,16 +583,12 @@ class KVServer : public SimpleApp {
         }
         // the origin codes are wrong,
         // because clock will not count the time when the process is sleeping
-        time_t starts, ends;
-        starts = time(nullptr);
+        auto starts = std::chrono::high_resolution_clock::now();
         Postoffice::Get()->van()->Send(msg);
         Postoffice::Get()->van()->Wait_for_finished();
-        ends = time(nullptr);
-        // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
-        // in order to solve the bug, I use 1000 as the divided number rather than 1.
-        // although the result may overflow in some case
-        // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
-        throughput = (int) (ends - starts);
+        auto ends = std::chrono::high_resolution_clock::now();
+        const std::chrono::duration<double> diff = ends - starts;
+        throughput = int(diff.count() * 1000000);
         last_recv_id = receiver;
       }
     }
@@ -897,16 +894,12 @@ void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
       }
       // the origin codes are wrong,
       // because clock will not count the time when the process is sleeping
-      time_t starts, ends;
-      starts = time(nullptr);
+      auto starts = std::chrono::high_resolution_clock::now();
       Postoffice::Get()->van()->Send(msg);
       Postoffice::Get()->van()->Wait_for_finished();
-      ends = time(nullptr);
-      // this is obvious a bug, because when it takes more than 1 sec, the throughput will be 0.
-      // in order to solve the bug, I use 1000 as the divided number rather than 1.
-      // although the result may overflow in some case
-      // the origin is: (1/((double)(ends - starts) / CLOCKS_PER_SEC))
-      throughput = (int) (ends - starts);
+      auto ends = std::chrono::high_resolution_clock::now();
+      const std::chrono::duration<double> diff = ends - starts;
+      throughput = int(diff.count() * 1000000);
       last_recv_id = receiver;
     }
   }
@@ -1120,12 +1113,12 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
     msg.meta.recver = receiver;
     // the origin codes are wrong,
     // because clock will not count the time when the process is sleeping
-    time_t startTime, endTime;
-    startTime = time(nullptr);
+    auto starts = std::chrono::high_resolution_clock::now();
     Postoffice::Get()->van()->Send(msg);
     Postoffice::Get()->van()->WaitForModelDistributionReply();
-    endTime = time(nullptr);
-    lastBandwidth = (int)(startTime - endTime);
+    auto ends = std::chrono::high_resolution_clock::now();
+    const std::chrono::duration<double> diff = ends - starts;
+    lastBandwidth = int(diff.count() * 1000000);
     lastReceiver = receiver;
   }
 }
