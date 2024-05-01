@@ -587,7 +587,7 @@ class KVServer : public SimpleApp {
         Postoffice::Get()->van()->Send(msg);
         Postoffice::Get()->van()->Wait_for_finished();
         auto ends = std::chrono::high_resolution_clock::now();
-        const std::chrono::duration<double> diff = ends - starts;
+        const std::chrono::duration<double> diff = starts - ends;
         throughput = int(diff.count() * 1000000);
         last_recv_id = receiver;
       }
@@ -898,7 +898,7 @@ void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
       Postoffice::Get()->van()->Send(msg);
       Postoffice::Get()->van()->Wait_for_finished();
       auto ends = std::chrono::high_resolution_clock::now();
-      const std::chrono::duration<double> diff = ends - starts;
+      const std::chrono::duration<double> diff = starts - ends;
       throughput = int(diff.count() * 1000000);
       last_recv_id = receiver;
     }
@@ -1117,7 +1117,7 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
     Postoffice::Get()->van()->Send(msg);
     Postoffice::Get()->van()->WaitForModelDistributionReply();
     auto ends = std::chrono::high_resolution_clock::now();
-    const std::chrono::duration<double> diff = ends - starts;
+    const std::chrono::duration<double> diff = starts - ends ;
     lastBandwidth = int(diff.count() * 1000000);
     lastReceiver = receiver;
   }
