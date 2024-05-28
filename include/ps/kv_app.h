@@ -3,6 +3,7 @@
  */
 #ifndef PS_KV_APP_H_
 #define PS_KV_APP_H_
+#include <limits>
 #include <string>
 #include <algorithm>
 #include <utility>
@@ -587,8 +588,8 @@ class KVServer : public SimpleApp {
         Postoffice::Get()->van()->Send(msg);
         Postoffice::Get()->van()->Wait_for_finished();
         auto ends = std::chrono::high_resolution_clock::now();
-        const std::chrono::duration<double> diff = starts - ends;
-        throughput = int(diff.count() * 1000000);
+        const std::chrono::duration<double> diff = ends - starts;
+        throughput = std::numeric_limits<int>::max() - int(diff.count() * 1000000);
         last_recv_id = receiver;
       }
     }
@@ -898,8 +899,8 @@ void KVWorker<Val>::AutoPullUpdate(const int version, const int iters,
       Postoffice::Get()->van()->Send(msg);
       Postoffice::Get()->van()->Wait_for_finished();
       auto ends = std::chrono::high_resolution_clock::now();
-      const std::chrono::duration<double> diff = starts - ends;
-      throughput = int(diff.count() * 1000000);
+      const std::chrono::duration<double> diff = ends - starts;
+      throughput = std::numeric_limits<int>::max() - int(diff.count() * 1000000);
       last_recv_id = receiver;
     }
   }
