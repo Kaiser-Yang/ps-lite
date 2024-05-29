@@ -1217,8 +1217,16 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     if (receiver_[requestor] == UNMATCHED) {
       LEMETHOD_LOG(-1, requestor, "didn't find receiver, so", requestor, "will be rescheduled.");
       receiver_[requestor] = UNKNOWN;
+      // this insert is necessary
+      // because without the insert, requestor will join next scheduling,
+      // even if requestor is sleeping for receiving_nodes_.size() == 0
+      // which will cause the behaviors not consistent with the requirements
+      unreceived_nodes_.insert(requestor);
       locker1.unlock();
       locker2.unlock();
+      // this wait is necessary, otherwise if all the nodes are receiving,
+      // this requestor will call ProcessAskLocalAggregation many times
+      // which will cause stack overflow
       {
         std::unique_lock<std::mutex> locker{mman_cv_mu_};
         mman_cv_.wait(locker, [this, &mu_]() -> bool {
@@ -1244,11 +1252,27 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         Send(rpl);
       } else {
         LEMETHOD_LOG(-1, receiver_[requestor], "rejected as a receiver, so", requestor, "will be rescheduled.");
+        // this insert is necessary
+        // because without the insert, requestor will join next scheduling,
+        // even if requestor is sleeping for receiving_nodes_.size() == 0
+        // which will cause the behaviors not consistent with the requirements
+        unreceived_nodes_.insert(requestor);
         receiver_[requestor] = UNKNOWN;
         // when the receiver rejected to be a receiver, we need re-schedule the requestor.
         // we must release the locks, so the recursivation can lock again.
         locker1.unlock();
         locker2.unlock();
+        // this wait is necessary, otherwise if all the nodes are receiving,
+        // this requestor will call ProcessAskLocalAggregation many times
+        // which will cause stack overflow
+        {
+          std::unique_lock<std::mutex> locker{mman_cv_mu_};
+          mman_cv_.wait(locker, [this, &mu_]() -> bool {
+            std::unique_lock<std::mutex> locker{mu_};
+            LEMETHOD_LOG(-1, "wait receiving_nodes.size:", receiving_nodes_.size());
+            return receiving_nodes_.size() == 0;
+          });
+        }
         ProcessAskLocalAggregation(msg);
       }
     }
