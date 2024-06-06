@@ -1179,34 +1179,27 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   int requestor = msg.meta.sender;
   Postoffice *postoffice = Postoffice::Get();
   {
-    // this mean if there are nodes more than minimum_model_aggregation_num_,
-    // we should wait for previous scheduling finishment.
+    std::unique_lock<std::mutex> locker{mu_};
+    unreceived_nodes_.erase(requestor);
+    receiving_nodes_.erase(requestor);
+  }
+  {
     std::unique_lock<std::mutex> locker{mman_cv_mu_};
-    mman_cv_.wait(locker, [this]() -> bool {
-      return model_aggregation_num_ < minimum_model_aggregation_num_;
-    });
     model_aggregation_num_++;
-    {
-      std::unique_lock<std::mutex> locker{mu_};
-      unreceived_nodes_.erase(requestor);
-      receiving_nodes_.erase(requestor);
-    }
     LEMETHOD_LOG(-1, "requestor:", requestor,
                  "model_aggregation_num:", model_aggregation_num_,
                  "minimum_model_aggregation_num:", minimum_model_aggregation_num_,
                  "unreceived_nodes.size:", unreceived_nodes_.size(),
                  "receiving_nodes.size:", receiving_nodes_.size());
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
-      if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
+      if (model_aggregation_num_ >= minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
       LEMETHOD_LOG(-1, "unreceived_nodes.size", unreceived_nodes_.size(), "receiving_nodes.size:", receiving_nodes_.size());
       return unreceived_nodes_.size() == 1 && receiving_nodes_.size() == 0;
     });
+    if (minimum_model_aggregation_num_ > model_aggregation_num_) { minimum_model_aggregation_num_ = model_aggregation_num_; }
     model_aggregation_num_--;
     minimum_model_aggregation_num_--;
-    // This means that this is the last turn, we just change the minimum_model_aggregation_num,
-    // Doing this can make next wait() don't lock mu_ and make sure minimum_model_aggregation_num decrease to 0.
-    if (model_aggregation_num_ < minimum_model_aggregation_num_) { minimum_model_aggregation_num_ = model_aggregation_num_; }
     mman_cv_.notify_all();
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
@@ -1217,10 +1210,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     if (receiver_[requestor] == UNMATCHED) {
       LEMETHOD_LOG(-1, requestor, "didn't find receiver, so", requestor, "will be rescheduled.");
       receiver_[requestor] = UNKNOWN;
-      // this insert is necessary
-      // because without the insert, requestor will join next scheduling,
-      // even if requestor is sleeping for receiving_nodes_.size() == 0
-      // which will cause the behaviors not consistent with the requirements
       unreceived_nodes_.insert(requestor);
       locker1.unlock();
       locker2.unlock();
@@ -1231,37 +1220,34 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         std::unique_lock<std::mutex> locker{mman_cv_mu_};
         mman_cv_.wait(locker, [this, &mu_]() -> bool {
           std::unique_lock<std::mutex> locker{mu_};
-          LEMETHOD_LOG(-1, "wait receiving_nodes.size:", receiving_nodes_.size());
-          return receiving_nodes_.size() == 0;
+          LEMETHOD_LOG(-1, "wait receiving_nodes.count(server):", receiving_nodes_.count(Postoffice::ServerRankToID(0)));
+          return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
         });
       }
       ProcessAskLocalAggregation(msg);
     } else {
       req.meta.recver = receiver_[requestor];
       req.meta.control.cmd = Control::ASK_AS_RECEIVER;
+      rpl.meta.local_aggregation_receiver = receiver_[requestor];
+      locker1.unlock();
+      locker2.unlock();
       Send(req);
       bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
         LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, "receiver:", receiver_[requestor]);
-        rpl.meta.local_aggregation_receiver = receiver_[requestor];
-        if (unreceived_nodes_.count(receiver_[requestor]) == 1) {
-          unreceived_nodes_.erase(receiver_[requestor]);
-          receiving_nodes_.insert(receiver_[requestor]);
-        }
-        CheckModelAggregationFinish();
         Send(rpl);
+        std::lock(locker1, locker2);
+        // erase before receiver reaches, this can let the receiver join next scheduling as soon as possible
+        unreceived_nodes_.erase(receiver_[requestor]);
+        receiving_nodes_.insert(receiver_[requestor]);
+        CheckModelAggregationFinish();
       } else {
         LEMETHOD_LOG(-1, receiver_[requestor], "rejected as a receiver, so", requestor, "will be rescheduled.");
-        // this insert is necessary
-        // because without the insert, requestor will join next scheduling,
-        // even if requestor is sleeping for receiving_nodes_.size() == 0
-        // which will cause the behaviors not consistent with the requirements
-        unreceived_nodes_.insert(requestor);
         receiver_[requestor] = UNKNOWN;
         // when the receiver rejected to be a receiver, we need re-schedule the requestor.
-        // we must release the locks, so the recursivation can lock again.
+        locker1.lock();
+        unreceived_nodes_.insert(requestor);
         locker1.unlock();
-        locker2.unlock();
         // this wait is necessary, otherwise if all the nodes are receiving,
         // this requestor will call ProcessAskLocalAggregation many times
         // which will cause stack overflow
@@ -1269,14 +1255,22 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           std::unique_lock<std::mutex> locker{mman_cv_mu_};
           mman_cv_.wait(locker, [this, &mu_]() -> bool {
             std::unique_lock<std::mutex> locker{mu_};
-            LEMETHOD_LOG(-1, "wait receiving_nodes.size:", receiving_nodes_.size());
-            return receiving_nodes_.size() == 0;
+            LEMETHOD_LOG(-1, "wait receiving_nodes.count(server):", receiving_nodes_.count(Postoffice::ServerRankToID(0)));
+            return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
           });
         }
         ProcessAskLocalAggregation(msg);
       }
     }
     return;
+  }
+  {
+    // wail for all the requestor to wake up
+    std::unique_lock<std::mutex> locker{mman_cv_mu_};
+    mman_cv_.wait(locker, [this]() -> bool {
+      return model_aggregation_num_ == 0;
+    });
+    minimum_model_aggregation_num_ = schedule_num_;
   }
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
@@ -1350,17 +1344,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   for (const int &rightNode : right_nodes_) {
     if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = UNMATCHED; }
   }
-  locker1.unlock();
-  locker2.unlock();
-  {
-    std::unique_lock<std::mutex> locker{mman_cv_mu_};
-    mman_cv_.wait(locker, [this]() -> bool {
-      return minimum_model_aggregation_num_ == 0;
-    });
-    minimum_model_aggregation_num_ = schedule_num_;
-    mman_cv_.notify_all();
-  }
-  std::lock(locker1, locker2);
   goto SendOrReschedule;
 }
 
