@@ -298,10 +298,6 @@ class KVWorker : public SimpleApp {
     kvs.lens = lens;
     kvs.priority = priority;
     // for init operation, we only need worker 0 to send data, so we'll use the original version.
-      Meta meta;
-      meta.push = true;
-      meta.num_aggregation = 1;
-      meta.key = key;
     if (!isInit && GetEnv("ENABLE_LEMETHOD", 0)) {
       // ZPush is Called by Engine::Get()->PushAsync(),
       // so LocalAggregation must be Called in the Customer::recv_thread_.
@@ -961,7 +957,13 @@ void KVWorker<Val>::Process(const Message& msg) {
   }
   // store the data for pulling
   int ts = msg.meta.timestamp;
-  if (msg.meta.pull) {
+  // NOTE: 2025-06-17
+  // We do not use recv_kvs_ for lemethod.
+  // Therefore we should not store the kvs in recv_kvs_.
+  // If we store the kvs in recv_kvs_,
+  // the data will never be removed,
+  // and will cause the program to use more and more memory.
+  if (msg.meta.pull && !GetEnv("ENABLE_LEMETHOD", 0)) {
     CHECK_GE(msg.data.size(), (size_t)2);
     KVPairs<Val> kvs;
     kvs.keys = msg.data[0];
