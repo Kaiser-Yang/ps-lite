@@ -20,19 +20,12 @@ typedef unsigned __int64 uint64_t;
 #include <inttypes.h>
 #endif
 
-/*!
- * \brief Get environment variable as int with default.
- * \param key the name of environment variable.
- * \param default_val the default value of environment variable.
- * \return The value received
- */
-template<typename V>
-inline V GetEnv(const char *key, V default_val) {
+inline std::string GetEnv(const char *key, std::string default_val) {
   const char *val = Environment::Get()->find(key);
   if (val == nullptr) {
     return default_val;
   } else {
-    return V(val);
+    return std::string{val};
   }
 }
 

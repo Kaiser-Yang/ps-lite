@@ -7,7 +7,6 @@
 #include <ctime>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -16,7 +15,6 @@
 #include <queue>
 #include <condition_variable>
 #include <map>
-#include "ps/base.h"
 #include "ps/internal/message.h"
 #include "my_thread_pool.h"
 static std::mutex log_mu_;
@@ -44,15 +42,22 @@ class Van {
   /**\brief deconstructer, do nothing. use \ref Stop for real stop */
   virtual ~Van() {}
 
-  enum RECEIVER_STATUS {
+  enum STATUS {
+    // Model distribution or model aggregation finished
     QUIT = -1,
+    // The result is unknown
     UNKNOWN = -2,
+    // The node can not find the receiver
     UNMATCHED = -3,
   };
 
+  // The type of connection between nodes.
   enum LEMETHOD_CONNECTION_TYPE {
+    // Parameter Server connection type, which is like the original PS
     PS_CONNECTION_TYPE = 0,
+    // Complete connection type, which means all nodes are connected to each other
     COMPLETE_CONNECTION_TYPE = 1,
+    // User designed connection type, which means the connection is designed by users
     USER_DESIGNED_CONNECTION_TYPE = 2,
   };
 
@@ -112,7 +117,7 @@ class Van {
 
   bool IsServerNode();
 
-  void NoticeWorkersOneIterationFinish();
+  void NotifyWorkersOneIterationFinish();
 
   void DecreaseNumAsReceiver();
 
@@ -209,9 +214,13 @@ class Van {
   int drop_rate_ = 0;
   std::atomic<int> timestamp_{0};
   int init_stage = 0;
+  // The receiver of local aggregation
   int local_aggregation_receiver_ = UNKNOWN;
+  // How many nodes choose the node as receiver in one iteration of during model aggregation.
   int num_as_receiver_ = 0;
+  // Whether the node can be a receiver during model aggregation.
   bool can_be_receiver_ = true;
+  // The reachable information between nodes.
   std::map<std::pair<int, int>, bool> reachable_;
 
   std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_, receiving_nodes_;
@@ -223,9 +232,12 @@ class Van {
   int num_ma_ = 0, num_md_ = 0;
   std::vector<std::vector<int>> bandwidth_, lifetime_;
   std::condition_variable cv_;
+  // The mutex for scheduler to process requests and replies.
   std::mutex cv_mu_;
   MyThreadPool threadPool_;
+  // The node id which is the last node reply to the ASK_AS_RECEIVER message.
   int reply_node_id_ = UNKNOWN;
+  // Whether the node has received the new model
   bool receive_model_distribution_reply_ = false;
   static constexpr int INF = 0x3f3f3f3f;
   static constexpr double DEFAULT_GREED_RATE = 0.5;
@@ -233,14 +245,11 @@ class Van {
   static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
   /* The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known. */
   int schedule_num_ = UNKNOWN;
-
-  /* The ratio that declare how many nodes will paticipate in one local aggregation scheduling. */
+  // The ratio that declare how many nodes will paticipate in one local aggregation scheduling.
   double schedule_ratio_ = UNKNOWN;
-
-  /* How many nodes have requestes for model aggregation in one scheduling. */
+  // How many nodes have requestes for model aggregation in one scheduling.
   int model_aggregation_num_ = 0;
-
-  /* The minimum num of nodes participating one scheduling of model aggregation. */
+  // The minimum num of nodes participating one scheduling of model aggregation.
   int minimum_model_aggregation_num_ = UNKNOWN;
 
   std::mutex mmdn_cv_mu_, mman_cv_mu_;
@@ -255,8 +264,8 @@ class Van {
   int lemethod_connection_type_ = PS_CONNECTION_TYPE;
   int iteration_ = 0;
   int model_receiver_ = UNKNOWN;
+  // The response of the ASK_AS_RECEIVER message.
   int ask_as_receiver_status_ = false;
-
   std::vector<std::vector<int>> A;
   std::vector<int> B;
   std::vector<int> B1;
@@ -276,8 +285,6 @@ class Van {
 
   void GetEdgeWeight(std::unordered_set<int>& left_nodes_, std::unordered_set<int>& right_nodes_,
                      std::vector<std::vector<int>>& edge_weight_, bool matched = true);
-
-  void AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes);
 
   void CheckExpiration();
 
@@ -329,7 +336,7 @@ class Van {
 
   void ProcessModelDistribution(Message *msg);
 
-  void ProcessNoticeWorkersOneIterationFinish(Message *msg);
+  void ProcessNotifyWorkersOneIterationFinish(Message *msg);
 
   void CheckModelDistributionFinish();
 
@@ -344,7 +351,6 @@ class Van {
   void ProcessAsk1Command(Message* msg);
 
   void ProcessReplyCommand(Message* reply);
-
 
   /**
    * \brief processing logic of AddNode message for scheduler

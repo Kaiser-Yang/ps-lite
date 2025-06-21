@@ -1,10 +1,8 @@
 /**
  *  Copyright (c) 2015 by Contributors
  */
-#include <cstdlib>
 #include "ps/internal/customer.h"
 #include "ps/internal/postoffice.h"
-#include "dmlc/parameter.h"
 
 namespace ps {
 
@@ -47,7 +45,7 @@ int Customer::NumResponse(int timestamp) {
 void Customer::AddResponse(int timestamp, int num) {
   std::lock_guard<std::mutex> lk(tracker_mu_);
   tracker_[timestamp].second += num;
-  if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+  if (GetEnv("ENABLE_TSENGINE", 0)) {
     tracker_cond_.notify_all();
   }
 }
@@ -64,7 +62,8 @@ void Customer::Receiving() {
     recv_handle_(recv);
     if (!recv.meta.request) {
       std::lock_guard<std::mutex> lk(tracker_mu_);
-      if (recv.meta.timestamp != -1) { // TSEngine may send msg with timestamp = -1, so this must to be checked.
+      // TSEngine may send msg with timestamp = -1, so this must to be checked.
+      if (recv.meta.timestamp != -1) {
         tracker_[recv.meta.timestamp].second++;
       }
       tracker_cond_.notify_all();

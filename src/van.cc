@@ -9,7 +9,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <utility>
 
 #include "dmlc/logging.h"
 #include "ps/base.h"
@@ -17,11 +16,9 @@
 #include "ps/internal/message.h"
 #include "ps/internal/postoffice.h"
 #include "ps/internal/van.h"
-#include "ps/sarray.h"
 
 #include "./meta.pb.h"
 #include "./network_utils.h"
-#include "./ibverbs_van.h"
 #include "./resender.h"
 #include "./zmq_van.h"
 #include "./p3_van.h"
@@ -620,8 +617,8 @@ void Van::Receiving() {
         ProcessModelDistributionReply(&msg);
       } else if (ctrl.cmd == Control::INIT) {
         ProcessInit(&msg);
-      } else if (ctrl.cmd == Control::NOTICE_WORKER_ONE_ITERATION_FINISH) {
-        ProcessNoticeWorkersOneIterationFinish(&msg);
+      } else if (ctrl.cmd == Control::NOTIFY_WORKER_ONE_ITERATION_FINISH) {
+        ProcessNotifyWorkersOneIterationFinish(&msg);
       } else if (ctrl.cmd == Control::AUTOPULLRPY) {
         ProcessAutopullrpy();
       } else if (ctrl.cmd == Control::ASK) {
@@ -1411,16 +1408,6 @@ void Van::GetEdgeWeight(std::unordered_set<int>& left_nodes_,
   }
 }
 
-void Van::AddVirtualNodes(std::unordered_set<int> &leftNodes, std::unordered_set<int> &rightNodes) {
-  int virtualNodeID = Postoffice::Get()->WorkerRankToID(Postoffice::Get()->num_workers());
-  while (leftNodes.size() > rightNodes.size()) {
-    rightNodes.insert(virtualNodeID++);
-  }
-  while (leftNodes.size() < rightNodes.size()) {
-    leftNodes.insert(virtualNodeID++);
-  }
-}
-
 void Van::CheckExpiration() {
   for (int requestorID = 8; requestorID < lifetime_.size(); requestorID++) {
     for (auto &lifetime : lifetime_[requestorID]){
@@ -1652,10 +1639,10 @@ int Van::GetLocalAggregationReceiver() {
   return res;
 }
 
-void Van::NoticeWorkersOneIterationFinish() {
+void Van::NotifyWorkersOneIterationFinish() {
   Message msg;
   msg.meta.sender = my_node_.id;
-  msg.meta.control.cmd = Control::NOTICE_WORKER_ONE_ITERATION_FINISH;
+  msg.meta.control.cmd = Control::NOTIFY_WORKER_ONE_ITERATION_FINISH;
   for (int receiver : Postoffice::Get()->GetNodeIDs(kWorkerGroup)) {
     msg.meta.recver = receiver;
     Send(msg);
@@ -1663,7 +1650,7 @@ void Van::NoticeWorkersOneIterationFinish() {
   Postoffice::Get()->Barrier(0, kWorkerGroup + kServerGroup);
 }
 
-void Van::ProcessNoticeWorkersOneIterationFinish(Message *msg) {
+void Van::ProcessNotifyWorkersOneIterationFinish(Message *msg) {
   {
     std::lock_guard<std::mutex> locker{cv_mu_};
     can_be_receiver_ = true;

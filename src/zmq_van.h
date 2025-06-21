@@ -3,8 +3,8 @@
  */
 #ifndef PS_ZMQ_VAN_H_
 #define PS_ZMQ_VAN_H_
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstdio>
+#include <cstdlib>
 #include <zmq.h>
 #include <string>
 #include <unordered_map>
@@ -102,13 +102,13 @@ class ZMQVan : public Van {
     }
     // worker doesn't need to connect to the other workers. same for server
     if (node.role == my_node_.role && node.id != my_node_.id &&
-        !dmlc::GetEnv("ENABLE_LEMETHOD", false) && !dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+        !GetEnv("ENABLE_LEMETHOD", 0) && !GetEnv("ENABLE_TSENGINE", 0)) {
       return;
     }
     // for the reason of the implementation,
     // if there are one way from a to b, we must connect b to a, too.
     // but we can still prevent b send model data to a.
-    if (dmlc::GetEnv("ENABLE_LEMETHOD", false) && my_node_.role != Node::SCHEDULER &&
+    if (GetEnv("ENABLE_LEMETHOD", 0) && my_node_.role != Node::SCHEDULER &&
         node.role != Node::SCHEDULER && !Reachable(my_node_.id, node.id) &&
         !Reachable(node.id, my_node_.id)) {
       return;

@@ -4,7 +4,6 @@
 #ifndef PS_INTERNAL_MESSAGE_H_
 #define PS_INTERNAL_MESSAGE_H_
 #include <vector>
-#include <limits>
 #include <string>
 #include <sstream>
 #include "ps/sarray.h"
@@ -107,7 +106,24 @@ struct Control {
   std::string DebugString() const {
     if (empty()) return "";
     std::vector<std::string> cmds = {
-      "EMPTY", "TERMINATE", "ADD_NODE", "BARRIER", "ACK", "HEARTBEAT"};
+      "EMPTY", "TERMINATE", "ADD_NODE", "BARRIER", "ACK", "HEARTBEAT",
+      "ASK_LOCAL_AGGREGATION",
+      "ASK_MODEL_RECEIVER",
+      "ASK_MODEL_RECEIVER_REPLY",
+      "ASK_LOCAL_AGGREGATION_REPLY",
+      "MODEL_DISTRIBUTION_REPLY",
+      "LOCAL_AGGREGATION",
+      "ASK_AS_RECEIVER",
+      "MODEL_DISTRIBUTION",
+      "ASK_AS_RECEIVER_REPLY",
+      "FINISH_RECEIVING_LOCAL_AGGREGATION",
+      "NOTIFY_WORKER_ONE_ITERATION_FINISH",
+      "INIT",
+      "AUTOPULLRPY",
+      "ASK",
+      "REPLY",
+      "ASK1"
+    };
     std::stringstream ss;
     ss << "cmd=" << cmds[cmd];
     if (node.size()) {
@@ -132,7 +148,7 @@ struct Control {
     MODEL_DISTRIBUTION,
     ASK_AS_RECEIVER_REPLY,
     FINISH_RECEIVING_LOCAL_AGGREGATION,
-    NOTICE_WORKER_ONE_ITERATION_FINISH,
+    NOTIFY_WORKER_ONE_ITERATION_FINISH,
     INIT,
     AUTOPULLRPY,
     ASK,
@@ -157,9 +173,8 @@ struct Meta {
   /** \brief default constructor */
   Meta() : head(kEmpty), app_id(kEmpty), customer_id(kEmpty),
            timestamp(kEmpty), sender(kEmpty), recver(kEmpty),
-           request(false), push(false), pull(false), simple_app(false),
            local_aggregation_receiver(kEmpty), model_receiver(kEmpty), last_receiver(kEmpty),
-           last_bandwidth(kEmpty), num_aggregation(kEmpty), version(kEmpty), key(kEmpty), ask_as_receiver_status(false), iters(kEmpty) {}
+           last_bandwidth(kEmpty), num_aggregation(kEmpty), version(kEmpty), key(kEmpty), iters(kEmpty) {}
   std::string DebugString() const {
     std::stringstream ss;
     if (sender == Node::kEmpty) {
@@ -200,13 +215,13 @@ struct Meta {
   /** \brief the node id of the receiver of this message */
   int recver;
   /** \brief whether or not this is a request message*/
-  bool request;
+  bool request{};
   /** \brief whether or not a push message */
-  bool push;
+  bool push{};
   /** \brief whether or not a pull message */
-  bool pull;
+  bool pull{};
   /** \brief whether or not it's for SimpleApp */
-  bool simple_app;
+  bool simple_app{};
   /** \brief an string body */
   std::string body;
   /** \brief data type of message.data[i] */
@@ -217,15 +232,22 @@ struct Meta {
   int data_size = 0;
   /** \brief message priority */
   int priority = 0;
-
+  // When the cmd is ASK_LOCAL_AGGREGATION_REPLY,
+  // this is the receiver of local aggregation.
   int local_aggregation_receiver;
+  // The receiver of model distribution.
   int model_receiver;
+  // The last receiver of model.
   int last_receiver;
+  // The last detected bandwidth.
   int last_bandwidth;
+  // How many workers's local model has been aggregated in this message.
   int num_aggregation;
+  // When the cmd is ASK_AS_RECEIVER_REPLY,
+  // this is the status of whether this node can be a receiver.
+  bool ask_as_receiver_status{};
   int version;
   int key;
-  bool ask_as_receiver_status;
   int iters;
 };
 /**

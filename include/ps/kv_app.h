@@ -4,14 +4,13 @@
 #ifndef PS_KV_APP_H_
 #define PS_KV_APP_H_
 #include <limits>
-#include <string>
 #include <algorithm>
 #include <utility>
 #include <vector>
 #include <unordered_map>
 #include <ctime>
-#include <thread>
 #include <chrono>
+#include <cmath>
 #include "ps/base.h"
 #include "ps/simple_app.h"
 #include "my_thread_pool.h"
@@ -53,14 +52,6 @@ struct KVPairs {
   int priority = 0;
 };
 
-/**
- * \brief A worker node that can \ref Push (\ref Pull) key-value pairs to (from) server
- * nodes
- *
- * \tparam Val the type of value, which should be primitive types such as
- * int32_t and float
- */
-
 /** \brief meta information about a kv request */
 struct KVMeta {
   /** \brief the int cmd */
@@ -84,6 +75,13 @@ struct KVMeta {
   int app_id;
 };
 
+/**
+ * \brief A worker node that can \ref Push (\ref Pull) key-value pairs to (from) server
+ * nodes
+ *
+ * \tparam Val the type of value, which should be primitive types such as
+ * int32_t and float
+ */
 template<typename Val>
 class KVWorker : public SimpleApp {
  public:
@@ -301,15 +299,16 @@ class KVWorker : public SimpleApp {
     kvs.lens = lens;
     kvs.priority = priority;
     // for init operation, we only need worker 0 to send data, so we'll use the original version.
-    if (!isInit && dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
       Meta meta;
       meta.push = true;
       meta.num_aggregation = 1;
       meta.key = key;
+    if (!isInit && GetEnv("ENABLE_LEMETHOD", 0)) {
       // ZPush is Called by Engine::Get()->PushAsync(),
       // so LocalAggregation must be Called in the Customer::recv_thread_.
       // otherwise in LocalAggregation, it will call WaitToRead() and will form a deadlock,
-      // because now thread is blocked for WaitToRead() and WaitToRead() can not be started for now thread is not finished.
+      // because now thread is blocked for WaitToRead()
+      // and WaitToRead() can not be started for now thread is not finished.
       // therefore we need Send() and let recv_thread_ call LocalAggregation().
       Message msg;
       msg.meta.app_id = 0;
@@ -326,7 +325,7 @@ class KVWorker : public SimpleApp {
       msg.AddData(kvs.vals);
       msg.AddData(kvs.lens);
       Postoffice::Get()->van()->Send(msg);
-    } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+    } else if (GetEnv("ENABLE_TSENGINE", 0)) {
       KVMeta meta;
       meta.cmd       = cmd;
       meta.push      = true;
@@ -454,7 +453,17 @@ class KVWorker : public SimpleApp {
    * @param push whether or not it is a pull request
    * @param cmd command
    */
-  void Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit = false, int receiver = -1, int key = 0, int uniq_key = 0, int key_version = 0);
+  void Send(int timestamp,
+            bool push,
+            bool pull,
+            int cmd,
+            const KVPairs<Val>& kvs,
+            bool isInit = false,
+            int receiver = -1,
+            int key = 0,
+            int uniq_key = 0,
+            int key_version = 0);
+
   /** \brief internal receive handle */
   void Process(const Message& msg);
   void LocalAggregation(const int cmd, const Meta& reqMeta, const KVPairs<Val>& reqData);
@@ -485,14 +494,7 @@ class KVWorker : public SimpleApp {
   std::mutex mu_;
   /** \brief kv list slicer */
   Slicer slicer_;
-
-
-  // struct UpdateBuf {
-  //   std::vector<KVMeta> request;
-  //   mxnet::NDArray merged;
-  //   // temp_array is used to cast received values as float32 for computation if required
-  //   mxnet::NDArray temp_array;
-  // };
+  // How many workers's local model has been aggregated on the current node
   int num_aggregation_ = 0;
   std::condition_variable cv_;
   std::unordered_map<int, KVPairs<Val>> receive_kvs_;
@@ -663,7 +665,7 @@ void KVServer<Val>::Process(const Message& msg) {
       data.lens = msg.data[2];
       CHECK_EQ(data.lens.size(), data.keys.size());
     }
-    if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+    if (GetEnv("ENABLE_LEMETHOD", 0)) {
       if (msg.meta.control.cmd == Control::LOCAL_AGGREGATION) {
         Postoffice::Get()->van()->DecreaseNumAsReceiver();
       }
@@ -671,7 +673,7 @@ void KVServer<Val>::Process(const Message& msg) {
   }
   CHECK(request_handle_);
   request_handle_(meta, data, this);
-  if(dmlc::GetEnv("ENABLE_TSENGINE", false) && msg.meta.push){
+  if(GetEnv("ENABLE_TSENGINE", 0) && msg.meta.push){
     Postoffice::Get()->van()->Ask1( msg.meta.app_id , msg.meta.customer_id, msg.meta.timestamp);
   }
 }
@@ -757,7 +759,16 @@ void KVWorker<Val>::DefaultSlicer(
 }
 
 template <typename Val>
-void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVPairs<Val>& kvs, bool isInit, int receiver, int key, int uniq_key, int key_version) {
+void KVWorker<Val>::Send(int timestamp,
+                         bool push,
+                         bool pull,
+                         int cmd,
+                         const KVPairs<Val>& kvs,
+                         bool isInit,
+                         int receiver,
+                         int key,
+                         int uniq_key,
+                         int key_version) {
   // slice the message
   SlicedKVs sliced;
   slicer_(kvs, Postoffice::Get()->GetServerKeyRanges(), &sliced);
@@ -786,7 +797,7 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
     msg.meta.recver      = Postoffice::Get()->ServerRankToID(i);
     msg.meta.priority    = kvs.priority;
     auto& kvs = s.second;
-    if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+    if (GetEnv("ENABLE_LEMETHOD", 0)) {
       msg.meta.key = key;
       msg.meta.sender = Postoffice::Get()->van()->my_node().id;
       {
@@ -801,7 +812,7 @@ void KVWorker<Val>::Send(int timestamp, bool push, bool pull, int cmd, const KVP
         std::lock_guard<std::mutex> locker{mu_};
         kvs.vals.CopyFrom(update_buf_[key]);
       }
-    } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+    } else if (GetEnv("ENABLE_TSENGINE", 0)) {
       msg.meta.key = uniq_key;
       msg.meta.version = key_version;
     }
@@ -922,7 +933,9 @@ void KVWorker<Val>::Response(const KVMeta& req) {
 }
 
 template <typename Val>
-void KVWorker<Val>::LocalAggregation(const int cmd, const Meta& reqMeta, const KVPairs<Val>& reqData) {
+void KVWorker<Val>::LocalAggregation(const int cmd,
+                                     const Meta& reqMeta,
+                                     const KVPairs<Val>& reqData) {
   int key = reqMeta.key;
   DataHandleType type = DepairDataHandleType(cmd);
   CHECK_EQ(type.dtype, mshadow::kFloat32) << "LeMethod only supports for float32";
@@ -962,7 +975,7 @@ void KVWorker<Val>::Process(const Message& msg) {
     recv_kvs_[ts].push_back(kvs);
     mu_.unlock();
   }
-  if (dmlc::GetEnv("ENABLE_LEMETHOD", false)) {
+  if (GetEnv("ENABLE_LEMETHOD", 0)) {
     auto& ctrl = msg.meta.control;
     if (ctrl.cmd == Control::LOCAL_AGGREGATION) {
       KVPairs<Val> data;
@@ -976,9 +989,12 @@ void KVWorker<Val>::Process(const Message& msg) {
         return;
       }
       // for self-sending msg, we need GetLocalAggregationReceiver
-      // and we need do this in another thread so that we can receive LOCAL_AGGREGATION from other workers to prevent from deadlock
-      // if we do this in current thread, deadlock will be caused by WaitForLocalAggregationFinish()
-      // because current thread is blocked we can not receive, WaitForLocalAggregationFinish() will not end forever.
+      // and we need do this in another thread
+      // so that we can receive LOCAL_AGGREGATION from other workers to prevent from deadlock
+      // if we do this in current thread,
+      // deadlock will be caused by WaitForLocalAggregationFinish()
+      // because current thread is blocked we can not receive,
+      // WaitForLocalAggregationFinish() will not end forever.
       int cmd = msg.meta.head, key = msg.meta.key, ts = msg.meta.timestamp;
       threadPool_.enqueue([this, ts, cmd, data, key] () {
         int receiver = Postoffice::Get()->van()->GetLocalAggregationReceiver();
@@ -1000,7 +1016,7 @@ void KVWorker<Val>::Process(const Message& msg) {
       }
       threadPool_.enqueue(&KVWorker<Val>::ModelDistribution, this, msg.meta, kvs);
     }
-  } else if (dmlc::GetEnv("ENABLE_TSENGINE", false)) {
+  } else if (GetEnv("ENABLE_TSENGINE", 0)) {
     int key = msg.meta.key;
     int version = msg.meta.version;
     if (msg.data.size()) {
@@ -1071,7 +1087,11 @@ void KVWorker<Val>::Process(const Message& msg) {
 }
 
 template <typename Val>
-void KVWorker<Val>::PullFromReceiveKvs(int key, SArray<Val> *vals, SArray<int> *lens, int cmd, const Callback& cb) {
+void KVWorker<Val>::PullFromReceiveKvs(int key,
+                                       SArray<Val> *vals,
+                                       SArray<int> *lens,
+                                       int cmd,
+                                       const Callback& cb) {
   std::unique_lock<std::mutex> locker{mu_};
   cv_.wait(locker, [this, key]() { return receive_kvs_.count(key) != 0; });
   auto &kvs = receive_kvs_[key];

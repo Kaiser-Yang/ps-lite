@@ -57,14 +57,19 @@ message PBMeta {
   optional int32 data_size = 11;
   // priority
   optional int32 priority = 13 [default = 0];
-
+  // the receiver node id for local aggregation
   optional int32 local_aggregation_receiver = 14;
+  // the receiver node id for model distribution
   optional int32 model_receiver = 15;
+  // the last receiver node id for local aggregation or model distribution
   optional int32 last_receiver = 16;
+  // the detected bandwidth of the last communication
   optional int32 last_bandwidth = 17;
+  // the number of aggregations for this message
   optional int32 num_aggregation = 18;
   optional int32 version = 19;
   optional int32 key = 20;
+  // the status of the receiver, true: ok to be a receiver, false: can not be a receiver
   optional bool ask_as_receiver_status = 21;
   optional int32 iters = 22;
 }
