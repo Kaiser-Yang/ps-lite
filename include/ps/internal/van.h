@@ -222,27 +222,68 @@ class Van {
   // The reachable information between nodes.
   std::map<std::pair<int, int>, bool> reachable_;
 
-  std::unordered_set<int> unreceived_nodes_md_, unreceived_nodes_ma_, receiving_nodes_;
-  std::mutex mu_ma_, mu_md_, mu_on_bw_lt_;
-  std::mutex mutex_on_km_ma_, mutex_on_km_md_;
-  std::unordered_set<int> left_nodes_ma_, right_nodes_ma_, left_nodes_md_, right_nodes_md_;
-  std::vector<std::vector<int>> edge_weight_ma_, edge_weight_md_;
-  std::vector<int> receiver_ma_, match_ma_, receiver_md_, match_md_;
-  int num_ma_ = 0, num_md_ = 0;
-  std::vector<std::vector<int>> bandwidth_, lifetime_;
-  std::condition_variable cv_;
+  // Mutex for model aggregation
+  std::mutex mu_ma_;
+  // The nodes that have not received model aggregation.
+  std::unordered_set<int> unreceived_nodes_ma_;
+  // Mutex for KM algorithm during model aggregation.
+  std::mutex mutex_on_km_ma_;
+  // The nodes that are used in KM algorithm during model aggregation.
+  std::unordered_set<int> left_nodes_ma_, right_nodes_ma_;
+  // The edge weight used for KM algorithm during model aggregation.
+  std::vector<std::vector<int>> edge_weight_ma_;
+  // The match result of KM algorithm during model aggregation.
+  std::vector<int> match_ma_;
+  // The receiver of local aggregation.
+  std::vector<int> receiver_ma_;
+  // The number of finished local aggregations in one scheduling.
+  int num_ma_ = 0;
+
+  // Mutex for model distribution
+  std::mutex mu_md_;
+  // The nodes that have not received model distribution.
+  std::unordered_set<int> unreceived_nodes_md_;
+  // Mutex for KM algorithm during model distribution.
+  std::mutex mutex_on_km_md_;
+  // The nodes that are used in KM algorithm during model distribution.
+  std::unordered_set<int> left_nodes_md_, right_nodes_md_;
+  // The edge weight used for KM algorithm during model distribution.
+  std::vector<std::vector<int>> edge_weight_md_;
+  // The match result of KM algorithm during model distribution.
+  std::vector<int> match_md_;
+  // The receiver of model distribution.
+  std::vector<int> receiver_md_;
+  // The number of finished model distributions in one scheduling.
+  int num_md_ = 0;
+
+  // The mutex for model distribution and model aggregation.
+  std::mutex mmdn_cv_mu_, mman_cv_mu_;
+  // The condition variable for model distribution and model aggregation.
+  std::condition_variable mman_cv_;
+  // The nodes that are receiving models.
+  std::unordered_set<int> receiving_nodes_;
+
+  // Mutex for bandwidth and lifetime.
+  std::mutex mu_on_bw_lt_;
+  // The detected bandwidth between nodes.
+  std::vector<std::vector<int>> bandwidth_;
+  // The lifetime of the bandwidth between nodes.
+  std::vector<std::vector<int>> lifetime_;
+
+  static constexpr int INF = 0x3f3f3f3f;
+
   // The mutex for scheduler to process requests and replies.
   std::mutex cv_mu_;
   MyThreadPool threadPool_;
+  // The condition variable for scheduler to wait for replies.
+  std::condition_variable cv_;
   // The node id which is the last node reply to the ASK_AS_RECEIVER message.
   int reply_node_id_ = UNKNOWN;
   // Whether the node has received the new model
   bool receive_model_distribution_reply_ = false;
-  static constexpr int INF = 0x3f3f3f3f;
-  static constexpr double DEFAULT_GREED_RATE = 0.5;
-  int bandwidthExpirationTime_ = 5;
-  static constexpr double DEFAULT_SCHEDULE_RATIO = 0.1;
-  /* The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known. */
+  // The expiration time of the bandwidth
+  int bandwidthExpirationTime_ = UNKNOWN;
+  // The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known.
   int schedule_num_ = UNKNOWN;
   // The ratio that declare how many nodes will paticipate in one local aggregation scheduling.
   double schedule_ratio_ = UNKNOWN;
@@ -250,21 +291,15 @@ class Van {
   int model_aggregation_num_ = 0;
   // The minimum num of nodes participating one scheduling of model aggregation.
   int minimum_model_aggregation_num_ = UNKNOWN;
-
-  std::mutex mmdn_cv_mu_, mman_cv_mu_;
-  std::condition_variable mman_cv_;
-
-  /* The probability that one node will not choose its receiver randomly. */
-  double greed_rate_;
-
-  /* The max number of threads, its default value is workers_num + 1. */
-  int max_thread_num_;
-
-  int lemethod_connection_type_ = PS_CONNECTION_TYPE;
-  int iteration_ = 0;
-  int model_receiver_ = UNKNOWN;
   // The response of the ASK_AS_RECEIVER message.
   int ask_as_receiver_status_ = false;
+  // The connection type of the lemethod.
+  int lemethod_connection_type_ = UNKNOWN;
+  // The model receiver of the model distribution.
+  int model_receiver_ = UNKNOWN;
+  // The current version of the model.
+  int iteration_ = 0;
+  double greed_rate_;
   std::vector<std::vector<int>> A;
   std::vector<int> B;
   std::vector<int> B1;
