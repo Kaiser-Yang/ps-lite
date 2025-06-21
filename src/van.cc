@@ -1056,22 +1056,15 @@ void Van::ProcessAskModelReceiver(Message msg) {
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
     // when the receiver is not connected with requestor, we try to reschedule.
-    if (receiver_[requestor] != QUIT && !reachable_[{requestor, receiver_[requestor]}]) {
-      LOG(INFO)<< requestor << " cannot send model to " << receiver_[requestor] << ", so "
-        << requestor << " will be rescheduled.";
-      receiver_[requestor] = UNKNOWN;
-      locker1.unlock();
-      locker2.unlock();
-      locker3.unlock();
-      ProcessAskModelReceiver(msg);
-    } else {
-      LOG(INFO) << "MODEL DISTRIBUTION([sender][receiver]): "
-        << requestor << ' ' << receiver_[requestor];
-      rpl.meta.model_receiver = receiver_[requestor];
-      if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
-      else { CheckModelDistributionFinish(); }
-      Send(rpl);
+    if (!reachable_[{requestor, receiver_[requestor]}]) {
+      receiver_[requestor] = QUIT;
     }
+    LOG(INFO) << "MODEL DISTRIBUTION([sender][receiver]): "
+      << requestor << ' ' << receiver_[requestor];
+    rpl.meta.model_receiver = receiver_[requestor];
+    if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
+    else { CheckModelDistributionFinish(); }
+    Send(rpl);
     return;
   }
   LOG(INFO) << requestor <<  " starts to schedule.";
@@ -1108,7 +1101,6 @@ void Van::ProcessAskModelReceiver(Message msg) {
     }
   }
   if (msg.meta.version > iteration_) { // if there are some unreceived nodes.
-    srand(time(nullptr));
     for (int rightNode : right_nodes_) {
       // 10000 means that the minimum precsion for greed_rate_ is 0.0001
       int randNumber = rand() % 10000;
