@@ -63,13 +63,14 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
               [](const Node& a, const Node& b) {
                 return (a.hostname.compare(b.hostname) | (a.port < b.port)) > 0;
               });
+    bool enable_le_method = getenv("ENABLE_LEMETHOD") != nullptr &&
+        atoi(getenv("ENABLE_LEMETHOD")) != 0;
     // assign node rank
     for (auto& node : nodes->control.node) {
       std::string node_host_ip =
           node.hostname + ":" + std::to_string(node.port);
       if (connected_nodes_.find(node_host_ip) == connected_nodes_.end()) {
-        if (getenv("ENABLE_LEMETHOD") != nullptr &&
-          atoi(getenv("ENABLE_LEMETHOD")) != 0 && node.id != Node::kEmpty) {
+        if (enable_le_method && node.id != Node::kEmpty) {
           LOG(INFO) << "assign rank=" << node.id << " to node " << node.DebugString();
           Connect(node);
           Postoffice::Get()->UpdateHeartbeat(node.id, t);
@@ -166,14 +167,12 @@ void Van::UpdateLocalID(Message* msg, std::unordered_set<int>* deadnodes_set,
       }
     }
   }
-
+  bool enable_le_method = getenv("ENABLE_LEMETHOD") != nullptr &&
+      atoi(getenv("ENABLE_LEMETHOD")) != 0;
   // update my id
-  for (size_t i = 0; i < ctrl.node.size(); ++i) {
-    const auto& node = ctrl.node[i];
+  for (const auto & node : ctrl.node) {
     if (my_node_.hostname == node.hostname && my_node_.port == node.port) {
-      if (getenv("ENABLE_LEMETHOD") != nullptr &&
-          atoi(getenv("ENABLE_LEMETHOD")) != 0 &&
-          getenv("DMLC_RANK") != nullptr) {
+      if (enable_le_method && getenv("DMLC_RANK") != nullptr) {
         CHECK(my_node_.id == node.id) << my_node_.id << " vs " << node.id;
         my_node_ = node;
         continue;
@@ -293,53 +292,44 @@ void Van::Start(int customer_id) {
     scheduler_.role = Node::SCHEDULER;
     scheduler_.id = kScheduler;
     is_scheduler_ = Postoffice::Get()->is_scheduler();
-    const char *enableTsengineVal = Environment::Get()->find("ENABLE_TSENGINE");
-    const char *enableLemethodVal = Environment::Get()->find("ENABLE_LEMETHOD");
-    bool enableTsengine = false;
-    bool enableLemethod = false;
-    if (enableTsengineVal != nullptr) {
-      CHECK(CanToInteger(enableTsengineVal)) << "failed to convert ENABLE_TSENGINE to integer.";
-      enableTsengine = (bool)atoi(enableTsengineVal);
-    }
-    if (enableLemethodVal != nullptr) {
-      CHECK(CanToInteger(enableLemethodVal)) << "failed to convert ENABLE_LEMETHOD to integer.";
-      enableLemethod = (bool)atoi(enableLemethodVal);
-    }
+    auto get_bool_env = [this](const char* name) {
+      const char* val = Environment::Get()->find(name);
+      if (val == nullptr) return false;
+      CHECK(CanToInteger(val)) << "failed to convert " << name << " to integer.";
+      return static_cast<bool>(atoi(val));
+    };
+    bool enableTsengine = get_bool_env("ENABLE_TSENGINE");
+    bool enableLemethod = get_bool_env("ENABLE_LEMETHOD");
     CHECK(!(enableTsengine && enableLemethod)) <<
           "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
-    if (enableLemethod) { // to get the connection relationship of all nodes
-      const char *dmlcRankVal = Environment::Get()->find("DMLC_RANK");
-      if (dmlcRankVal != nullptr) {
-        CHECK(CanToInteger(dmlcRankVal)) << "failed to convert DMLC_RANK to integer.";
-        int dmlcRank = atoi(dmlcRankVal);
-        CHECK(dmlcRank >= 0 && dmlcRank < Postoffice::Get()->num_workers()) << "DMLC_RANK outrange.";
-      }
+    if (enableLemethod) {
       const char *lemothodConnectionTypeVal = Environment::Get()->find("LEMETHOD_CONNECTION_TYPE");
-      if (lemothodConnectionTypeVal == nullptr) { // the default value of LEMETHOD_CONNECTION_TYPE
-        lemothodConnectionTypeVal = "0";
-      }
-      CHECK(CanToInteger(lemothodConnectionTypeVal)) << "failed to convert LEMETHOD_CONNECTION_TYPE to integer.";
+      CHECK(lemothodConnectionTypeVal != nullptr)
+        << "LEMETHOD_CONNECTION_TYPE is not set, please set it before running the program.";
+      CHECK(CanToInteger(lemothodConnectionTypeVal))
+        << "failed to convert LEMETHOD_CONNECTION_TYPE to integer.";
       lemethod_connection_type_ = atoi(lemothodConnectionTypeVal);
       CHECK(lemethod_connection_type_ >= 0 &&
             lemethod_connection_type_ <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
       LOG(INFO) << "set LEMETHOD_CONNECTION_TYPE: " << lemethod_connection_type_;
+      // make sure all the workers can reach the server
+      // and the server can reach all the workers
       int serverID = Postoffice::Get()->ServerRankToID(0);
       int workerID = 0;
-      for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable_ each other
+      for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
         workerID = Postoffice::Get()->WorkerRankToID(i);
         reachable_[{serverID, workerID}] = true;
         reachable_[{workerID, serverID}] = true;
         reachable_[{workerID, workerID}] = true;
       }
       reachable_[{serverID, serverID}] = true;
-      const char *lemethodConfPathCStr = Environment::Get()->find("LEMETHOD_CONF_PATH");
-      std::string lemethodConfPath = lemethodConfPathCStr == nullptr ? "" : lemethodConfPathCStr;
-      if (lemethodConfPath.empty()) {
-        lemethodConfPath = std::string(Environment::Get()->find("HOME")) + std::string("/lemethod.conf");
-      }
-      std::ifstream ifs(lemethodConfPath.c_str());
-      CHECK(ifs.good()) << "there are some errors while opening the file: " << lemethodConfPath << ".";
+      const char *lemethodConfPath = Environment::Get()->find("LEMETHOD_CONF_PATH");
+      CHECK(lemethodConfPath != nullptr)
+        << "LEMETHOD_CONF_PATH is not set, please set it before running the program.";
+      std::ifstream ifs(lemethodConfPath);
+      CHECK(ifs.good()) << "there are some errors while opening the file: "
+        << lemethodConfPath << ".";
       std::string line, cmd;
       std::istringstream iss;
       int nodeRankA, nodeRankB;
@@ -371,8 +361,11 @@ void Van::Start(int customer_id) {
             << ", please check the file: " << lemethodConfPath;
         }
       };
+      CHECK(bandwidthExpirationTime_ != UNKNOWN) <<
+        "you must set BANDWIDTH_EXPIRATION_TIME in the lemethod conf file.";
+      CHECK(!(schedule_num_ == UNKNOWN && schedule_ratio_ == UNKNOWN)) <<
+        "You must set SCHEDULE_NUM or SCHEDULE_RATIO in the lemethod conf file.";
       if (schedule_num_ == UNKNOWN) {
-        if (schedule_ratio_ == UNKNOWN) { schedule_ratio_ = DEFAULT_SCHEDULE_RATIO; }
         schedule_num_ = std::max((int)(Postoffice::Get()->num_workers() * schedule_ratio_), 1);
       }
       minimum_model_aggregation_num_ = schedule_num_;
@@ -406,18 +399,12 @@ void Van::Start(int customer_id) {
       } else if (enableLemethod) {
         CHECK(Postoffice::Get()->num_servers() == 1) << "LeMethod only suport one server.";
         const char *greedRateStr = Environment::Get()->find("GREED_RATE");
-        CHECK(greedRateStr == nullptr || CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
-        if (greedRateStr == nullptr) { greed_rate_ = DEFAULT_GREED_RATE; }
-        else { greed_rate_ = atof(greedRateStr); }
+        CHECK(greedRateStr != nullptr)
+          << "GREED_RATE is not set, please set it before running the program.";
+        CHECK(CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
+        greed_rate_ = atof(greedRateStr);
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
-        const char *maxThreadNumStr = Environment::Get()->find("MAX_THREAD_NUM");
-        CHECK(maxThreadNumStr == nullptr || CanToInteger(maxThreadNumStr)) << "failed to convert MAX_THREAD_NUM to integer";
-        if (maxThreadNumStr == nullptr) { max_thread_num_ = Postoffice::Get()->num_workers() + 1; }
-        else { max_thread_num_ = atoi(maxThreadNumStr); }
-        CHECK(max_thread_num_ > 0 && max_thread_num_ < std::numeric_limits<int>::max())
-          << "MAX_THREAD_NUM must be in (0, "
-          << std::numeric_limits<int>::max() << ")";
-        threadPool_.set_max_thread_num(max_thread_num_);
+        threadPool_.set_max_thread_num(Postoffice::Get()->num_workers() + 1);
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
           unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
@@ -426,10 +413,10 @@ void Van::Start(int customer_id) {
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
         LOG(INFO) << "max node id: " << maxNodeID;
         for (int i = 0; i < maxNodeID; i++) {
-          bandwidth_.emplace_back(std::vector<int>(maxNodeID, 0));
-          lifetime_.emplace_back(std::vector<int>(maxNodeID, UNKNOWN));
-          edge_weight_ma_.emplace_back(std::vector<int>(maxNodeID, -INF / 2));
-          edge_weight_md_.emplace_back(std::vector<int>(maxNodeID, -INF / 2));
+          bandwidth_.emplace_back(maxNodeID, 0);
+          lifetime_.emplace_back(maxNodeID, UNKNOWN);
+          edge_weight_ma_.emplace_back(maxNodeID, -INF / 2);
+          edge_weight_md_.emplace_back(maxNodeID, -INF / 2);
         }
         receiver_ma_.resize(maxNodeID, UNKNOWN);
         receiver_md_.resize(maxNodeID, UNKNOWN);
@@ -491,8 +478,13 @@ void Van::Start(int customer_id) {
     if (getenv("ENABLE_LEMETHOD") != nullptr &&
         atoi(getenv("ENABLE_LEMETHOD")) != 0 &&
         getenv("DMLC_RANK") != nullptr) {
-      int rank = atoi(getenv("DMLC_RANK"));
-      my_node_.id = Postoffice::WorkerRankToID(rank);
+      const char *dmlcRankVal = Environment::Get()->find("DMLC_RANK");
+      CHECK(dmlcRankVal != nullptr)
+        << "DMLC_RANK is not set, please set it before running the program.";
+      CHECK(CanToInteger(dmlcRankVal)) << "failed to convert DMLC_RANK to integer.";
+      int dmlcRank = atoi(dmlcRankVal);
+      CHECK(dmlcRank >= 0 && dmlcRank < Postoffice::Get()->num_workers()) << "DMLC_RANK outrange.";
+      my_node_.id = Postoffice::WorkerRankToID(dmlcRank);
     }
     Node customer_specific_node = my_node_;
     customer_specific_node.customer_id = customer_id;
