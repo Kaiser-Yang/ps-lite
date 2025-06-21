@@ -8,7 +8,6 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
-#include "dmlc/logging.h"
 #include "ps/range.h"
 #include "ps/internal/env.h"
 #include "ps/internal/customer.h"
@@ -195,19 +194,5 @@ class Postoffice {
 
 /** \brief verbose log */
 #define PS_VLOG(x) LOG_IF(INFO, x <= Postoffice::Get()->verbose())
-
-#define LEMETHOD_LOG(x, args...) LemethodLog(x, __FILE__, __LINE__, args)
-
-template <class ...Args>
-void LemethodLog(int x, const char *filename, int line, Args ...args) {
-#ifndef LEMETHOD_NO_DEBUG
-  if (x < Postoffice::Get()->verbose()) { return; }
-  std::lock_guard<std::mutex> locker{::log_mu_};
-  std::cout << "[" << dmlc::DateLogger().HumanDate() << "]" << " ";
-  std::cout << filename << ":" << line <<": ";
-  ((std::cout << args << " "), ...);
-  std::cout << std::endl;
-#endif
-}
 }  // namespace ps
 #endif  // PS_INTERNAL_POSTOFFICE_H_

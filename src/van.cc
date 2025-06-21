@@ -70,7 +70,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
       if (connected_nodes_.find(node_host_ip) == connected_nodes_.end()) {
         if (getenv("ENABLE_LEMETHOD") != nullptr &&
           atoi(getenv("ENABLE_LEMETHOD")) != 0 && node.id != Node::kEmpty) {
-          LEMETHOD_LOG(-1, "assign rank=", node.id, "to node", node.DebugString());
+          LOG(INFO) << "assign rank=" << node.id << " to node " << node.DebugString();
           Connect(node);
           Postoffice::Get()->UpdateHeartbeat(node.id, t);
           connected_nodes_[node_host_ip] = node.id;
@@ -267,6 +267,8 @@ void Van::ProcessAddNodeCommand(Message* msg, Meta* nodes,
   } else {
     for (const auto& node : ctrl.node) {
       std::string addr_str = node.hostname + ":" + std::to_string(node.port);
+      LOG(INFO) << "node " << node.id << " with address "
+                << addr_str << " is added";
       if (connected_nodes_.find(addr_str) == connected_nodes_.end()) {
         Connect(node);
         connected_nodes_[addr_str] = node.id;
@@ -321,7 +323,7 @@ void Van::Start(int customer_id) {
       CHECK(lemethod_connection_type_ >= 0 &&
             lemethod_connection_type_ <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
-      LEMETHOD_LOG(-1, "set LEMETHOD_CONNECTION_TYPE:", lemethod_connection_type_);
+      LOG(INFO) << "set LEMETHOD_CONNECTION_TYPE: " << lemethod_connection_type_;
       int serverID = Postoffice::Get()->ServerRankToID(0);
       int workerID = 0;
       for (int i = 0; i < Postoffice::Get()->num_workers(); i++) { // make sure all the workers and server is reachable_ each other
@@ -364,6 +366,9 @@ void Van::Start(int customer_id) {
         } else if (cmd == "SET_BANDWIDTH_EXPIRATION") {
           iss >> bandwidthExpirationTime_;
           CHECK(!iss.fail()) << "make sure bandwidthExpirationTime is an integer";
+        } else {
+          LOG(WARNING) << "unknown command in lemethod conf file: " << cmd
+            << ", please check the file: " << lemethodConfPath;
         }
       };
       if (schedule_num_ == UNKNOWN) {
@@ -419,7 +424,7 @@ void Van::Start(int customer_id) {
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
-        LEMETHOD_LOG(-1, "max node id:", maxNodeID);
+        LOG(INFO) << "max node id: " << maxNodeID;
         for (int i = 0; i < maxNodeID; i++) {
           bandwidth_.emplace_back(std::vector<int>(maxNodeID, 0));
           lifetime_.emplace_back(std::vector<int>(maxNodeID, UNKNOWN));
@@ -775,8 +780,6 @@ void Van::ProcessAskCommand(Message* msg) {
       num_unknow_node -= (Postoffice::Get()->num_servers() - Postoffice::Get()->num_workers());
     }
     //choose dicision mode
-    unsigned int seed = time(0);
-    srand(seed);
     int rand_number = rand() % 10;
     double greed_rate = double(num_know_node / (num_know_node+num_unknow_node)) < max_greed_rate ?
                         double(num_know_node / (num_know_node+num_unknow_node)) : max_greed_rate;
@@ -1031,8 +1034,8 @@ void Van::ProcessAskModelReceiver(Message msg) {
   Postoffice* postoffice = Postoffice::Get();
   if (msg.meta.last_receiver != UNKNOWN) {
     std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
-    LEMETHOD_LOG(-1, "detect bandwidth from", requestor, "to",
-                 msg.meta.last_receiver, ":", msg.meta.last_bandwidth);
+    LOG(INFO) << "detect bandwidth([from][to][bandwidth]): " << requestor << ' '
+      << msg.meta.last_receiver << ' ' << msg.meta.last_bandwidth;
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
   }
@@ -1062,16 +1065,16 @@ void Van::ProcessAskModelReceiver(Message msg) {
   SendOrReschedule:
     // when the receiver is not connected with requestor, we try to reschedule.
     if (receiver_[requestor] != QUIT && !reachable_[{requestor, receiver_[requestor]}]) {
-      LEMETHOD_LOG(-1, requestor, "cannot send model to", receiver_[requestor], ", so",
-                   requestor, "will be rescheduled.");
+      LOG(INFO)<< requestor << " cannot send model to " << receiver_[requestor] << ", so "
+        << requestor << " will be rescheduled.";
       receiver_[requestor] = UNKNOWN;
       locker1.unlock();
       locker2.unlock();
       locker3.unlock();
       ProcessAskModelReceiver(msg);
     } else {
-      LEMETHOD_LOG(-1, "MODEL DISTRIBUTION sender:", requestor,
-                   "receiver:", receiver_[requestor]);
+      LOG(INFO) << "MODEL DISTRIBUTION([sender][receiver]): "
+        << requestor << ' ' << receiver_[requestor];
       rpl.meta.model_receiver = receiver_[requestor];
       if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
       else { CheckModelDistributionFinish(); }
@@ -1079,7 +1082,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
     }
     return;
   }
-  LEMETHOD_LOG(-1, requestor, "starts to schedule.");
+  LOG(INFO) << requestor <<  " starts to schedule.";
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1126,10 +1129,9 @@ void Van::ProcessAskModelReceiver(Message msg) {
           unreceived_nodes_.erase(receiver_[rightNode]);
         }
       }
-      LEMETHOD_LOG(-1, "rightNode:", rightNode,
-                   "receiver_[rightNode]:", receiver_[rightNode],
-                   "reachable_:", std::boolalpha, reachable_[{rightNode, receiver_[rightNode]}],
-                   std::noboolalpha);
+      LOG(INFO) << "REACHABLE INFO([sender][receiver][reachable]): " << rightNode
+                << ' ' << receiver_[rightNode] << ' '
+                << reachable_[{rightNode, receiver_[rightNode]}];
     }
   }
   goto SendOrReschedule;
@@ -1188,15 +1190,18 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       unreceived_nodes_.erase(requestor);
       receiving_nodes_.erase(requestor);
     }
-    LEMETHOD_LOG(-1, "requestor:", requestor,
-                 "model_aggregation_num:", model_aggregation_num_,
-                 "minimum_model_aggregation_num:", minimum_model_aggregation_num_,
-                 "unreceived_nodes.size:", unreceived_nodes_.size(),
-                 "receiving_nodes.size:", receiving_nodes_.size());
+    LOG(INFO) << "AGGREGATION INFO:"
+      << " requestor: " << requestor
+      << " model_aggregation_num: " << model_aggregation_num_
+      << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
+      << " unreceived_nodes.size: " << unreceived_nodes_.size()
+      << " receiving_nodes.size: " << receiving_nodes_.size();
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
-      LEMETHOD_LOG(-1, "unreceived_nodes.size", unreceived_nodes_.size(), "receiving_nodes.size:", receiving_nodes_.size());
+      LOG(INFO) << "WAITING INFO: "
+        << "unreceived_nodes.size: " << unreceived_nodes_.size()
+        << " receiving_nodes.size: " << receiving_nodes_.size();
       return unreceived_nodes_.size() == 1 && receiving_nodes_.size() == 0;
     });
     model_aggregation_num_--;
@@ -1212,7 +1217,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
     if (receiver_[requestor] == UNMATCHED) {
-      LEMETHOD_LOG(-1, requestor, "didn't find receiver, so", requestor, "will be rescheduled.");
+      LOG(INFO) << requestor << " didn't find receiver,"
+        << " so " << requestor << " will be rescheduled.";
       receiver_[requestor] = UNKNOWN;
       // this insert is necessary
       // because without the insert, requestor will join next scheduling,
@@ -1228,8 +1234,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         std::unique_lock<std::mutex> locker{mman_cv_mu_};
         mman_cv_.wait(locker, [this, &mu_]() -> bool {
           std::unique_lock<std::mutex> locker{mu_};
-          LEMETHOD_LOG(-1, "wait receiving_nodes.size:", receiving_nodes_.size());
-          return receiving_nodes_.size() == 0;
+          LOG(INFO) << "WAITING INFO: "
+            << "receiving_nodes.count(server): "
+            << receiving_nodes_.count(Postoffice::ServerRankToID(0));
+          return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
         });
       }
       ProcessAskLocalAggregation(msg);
@@ -1239,7 +1247,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       Send(req);
       bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
-        LEMETHOD_LOG(-1, "LOCAL AGGREGATION sender:", requestor, "receiver:", receiver_[requestor]);
+        LOG(INFO) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
         if (unreceived_nodes_.count(receiver_[requestor]) == 1) {
           unreceived_nodes_.erase(receiver_[requestor]);
@@ -1248,7 +1256,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         CheckModelAggregationFinish();
         Send(rpl);
       } else {
-        LEMETHOD_LOG(-1, receiver_[requestor], "rejected as a receiver, so", requestor, "will be rescheduled.");
+        LOG(INFO) << receiver_[requestor] << " rejected as a receiver,"
+          << " so " << requestor << " will be rescheduled.";
         // this insert is necessary
         // because without the insert, requestor will join next scheduling,
         // even if requestor is sleeping for receiving_nodes_.size() == 0
@@ -1266,8 +1275,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           std::unique_lock<std::mutex> locker{mman_cv_mu_};
           mman_cv_.wait(locker, [this, &mu_]() -> bool {
             std::unique_lock<std::mutex> locker{mu_};
-            LEMETHOD_LOG(-1, "wait receiving_nodes.size:", receiving_nodes_.size());
-            return receiving_nodes_.size() == 0;
+            LOG(INFO) << "WAITING INFO:"
+              << " receiving_nodes.count(server): "
+              << receiving_nodes_.count(Postoffice::ServerRankToID(0));
+            return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
           });
         }
         ProcessAskLocalAggregation(msg);
@@ -1327,7 +1338,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         right_nodes_.erase(toLeftNode);
         // make sure the toLeftNode reschedule.
         receiver_[toLeftNode] = UNMATCHED;
-        LEMETHOD_LOG(-1, "move", toLeftNode, "to left nodes.");
+        LOG(INFO) << "move " << toLeftNode << " to left nodes.";
       }
     }
     if (right_nodes_.size() <= left_nodes_.size()) {
@@ -1547,7 +1558,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
   }
   int matchNum = 0;
   Hungrian(leftNodes, rightNodes, connected, match, matchNum);
-  LEMETHOD_LOG(-1, "match_num:", matchNum, "bisect_left:", l, "bisect_right:", r);
+  LOG(INFO) << "match_num: " <<  matchNum <<  " bisect_left: " <<  l <<  " bisect_right: " << r;
   if (matchNum == 0 || matchNum == 1) { return; }
   int tempMatchNum = 0;
   std::vector<std::vector<bool>> tempConnected;
@@ -1564,7 +1575,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
     if (tempMatchNum >= matchNum) { l = mid + 1; }
     else { r = mid - 1; }
   }
-  LEMETHOD_LOG(-1, "the limit is:", r);
+  LOG(INFO) << "the limit is: " << r;
   for (const int &leftNode : leftNodes) {
     for (const int &rightNode : rightNodes) {
       if (edgeWeight[leftNode][rightNode] >= r) { continue; }
@@ -1573,7 +1584,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
   }
   matchNum = 0;
   Hungrian(leftNodes, rightNodes, connected, match, matchNum);
-  LEMETHOD_LOG(-1, "the final matchNum:", matchNum);
+  LOG(INFO) << "the final matchNum: " << matchNum;
 }
 
 bool Van::CanToInteger(const char *str) {
@@ -1674,7 +1685,7 @@ void Van::WaitForLocalAggregationFinish() {
 }
 
 void Van::ProcessAskAsReceiver(Message *msg) {
-  LEMETHOD_LOG(-1, my_node_.id, "received ASK_AS_RECEIVER msg.");
+  LOG(INFO) << my_node_.id << " received ASK_AS_RECEIVER msg.";
   Message rpl;
   rpl.meta.sender = my_node_.id;
   rpl.meta.recver = kScheduler;
@@ -1688,17 +1699,17 @@ void Van::ProcessAskAsReceiver(Message *msg) {
 }
 
 void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
-  LEMETHOD_LOG(-1, "received FINISH_RECEIVING_LOCAL_AGGREGATION from", msg.meta.sender);
+  LOG(INFO) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from" << msg.meta.sender;
   std::unique_lock<std::mutex> locker{mu_ma_};
-  LEMETHOD_LOG(-1, msg.meta.sender, "finished receiving.");
+  LOG(INFO) << msg.meta.sender << " finished receiving.";
   if (receiving_nodes_.count(msg.meta.sender) == 0) {
-    LEMETHOD_LOG(-1, "receiving_nodes.size: ", receiving_nodes_.size());
+    LOG(INFO) << "receiving_nodes.size: " << receiving_nodes_.size();
     mman_cv_.notify_all();
     return;
   }
   receiving_nodes_.erase(msg.meta.sender);
   unreceived_nodes_ma_.insert(msg.meta.sender);
-  LEMETHOD_LOG(-1, "receiving_nodes.size: ", receiving_nodes_.size());
+  LOG(INFO) << "receiving_nodes.size: " << receiving_nodes_.size();
   mman_cv_.notify_all();
 }
 
@@ -1715,10 +1726,10 @@ bool Van::IsServerNode() {
 }
 
 void Van::DecreaseNumAsReceiver() {
-  LEMETHOD_LOG(-1, my_node_.id, "DecreaseNumAsReceiver.");
+  LOG(INFO) << my_node_.id <<  " DecreaseNumAsReceiver.";
   std::lock_guard<std::mutex> locker{cv_mu_};
   num_as_receiver_--;
-  LEMETHOD_LOG(-1, "num_as_receiver:", num_as_receiver_);
+  LOG(INFO) << "num_as_receiver: " << num_as_receiver_;
   if (num_as_receiver_ == 0) {
     Message req;
     req.meta.sender = my_node_.id;

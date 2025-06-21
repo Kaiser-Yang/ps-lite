@@ -17,7 +17,6 @@
 #include <map>
 #include "ps/internal/message.h"
 #include "my_thread_pool.h"
-static std::mutex log_mu_;
 namespace ps {
 class Resender;
 class PBMeta;
