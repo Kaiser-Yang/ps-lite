@@ -113,7 +113,6 @@ class KVWorker : public SimpleApp {
     using namespace std::placeholders;
     slicer_ = std::bind(&KVWorker<Val>::DefaultSlicer, this, _1, _2, _3);
     obj_ = new Customer(app_id, customer_id, std::bind(&KVWorker<Val>::Process, this, _1));
-    threadPool_.set_max_thread_num(1); // every time let one thread to distribute model
   }
 
   /** \brief deconstructor */
@@ -498,7 +497,6 @@ class KVWorker : public SimpleApp {
   int num_aggregation_ = 0;
   std::condition_variable cv_;
   std::unordered_map<int, KVPairs<Val>> receive_kvs_;
-  MyThreadPool threadPool_;
   std::unordered_map<int, SArray<Val>> update_buf_;
   enum class RequestType { kDefaultPushPull, kRowSparsePushPull, kCompressedPushPull };
 
@@ -996,13 +994,14 @@ void KVWorker<Val>::Process(const Message& msg) {
       // because current thread is blocked we can not receive,
       // WaitForLocalAggregationFinish() will not end forever.
       int cmd = msg.meta.head, key = msg.meta.key, ts = msg.meta.timestamp;
-      threadPool_.enqueue([this, ts, cmd, data, key] () {
+      std::thread t{[this, cmd, key, ts, data](){
         int receiver = Postoffice::Get()->van()->GetLocalAggregationReceiver();
         Postoffice::Get()->van()->WaitForLocalAggregationFinish();
         Send(ts, true, false, cmd, data, false, receiver, key);
         std::lock_guard<std::mutex> locker{mu_};
         num_aggregation_ = 0;
-      });
+      }};
+      t.detach();
     } else if (ctrl.cmd == Control::MODEL_DISTRIBUTION) {
       CHECK_EQ(msg.data.size(), (size_t)3);
       KVPairs<Val> *kvs = new KVPairs<Val>();
@@ -1014,7 +1013,8 @@ void KVWorker<Val>::Process(const Message& msg) {
         receive_kvs_[msg.meta.key] = *kvs;
         cv_.notify_all();
       }
-      threadPool_.enqueue(&KVWorker<Val>::ModelDistribution, this, msg.meta, kvs);
+      std::thread t{&KVWorker<Val>::ModelDistribution, this, msg.meta, kvs};
+      t.detach();
     }
   } else if (GetEnv("ENABLE_TSENGINE", 0)) {
     int key = msg.meta.key;

@@ -274,7 +274,6 @@ class Van {
 
   // The mutex for scheduler to process requests and replies.
   std::mutex cv_mu_;
-  MyThreadPool threadPool_;
   // The condition variable for scheduler to wait for replies.
   std::condition_variable cv_;
   // The node id which is the last node reply to the ASK_AS_RECEIVER message.

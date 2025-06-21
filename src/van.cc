@@ -404,7 +404,6 @@ void Van::Start(int customer_id) {
         CHECK(CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
         greed_rate_ = atof(greedRateStr);
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
-        threadPool_.set_max_thread_num(Postoffice::Get()->num_workers() + 1);
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
           unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
@@ -593,19 +592,22 @@ void Van::Receiving() {
       } else if (ctrl.cmd == Control::HEARTBEAT) {
         ProcessHearbeat(&msg);
       } else if (ctrl.cmd == Control::ASK_LOCAL_AGGREGATION) {
-        threadPool_.enqueue(&Van::ProcessAskLocalAggregation, this, msg);
+        std::thread t(&Van::ProcessAskLocalAggregation, this, msg);
+        t.detach();
       } else if (ctrl.cmd == Control::ASK_AS_RECEIVER) {
         ProcessAskAsReceiver(&msg);
       } else if (ctrl.cmd == Control::ASK_AS_RECEIVER_REPLY) {
         ProcessAskAsReceiverReply(&msg);
       } else if (ctrl.cmd == Control::FINISH_RECEIVING_LOCAL_AGGREGATION) {
-        threadPool_.enqueue(&Van::ProcessFinishReceivingLocalAggregation, this, msg);
+        std::thread t(&Van::ProcessFinishReceivingLocalAggregation, this, msg);
+        t.detach();
       } else if (ctrl.cmd == Control::ASK_LOCAL_AGGREGATION_REPLY) {
         ProcessAskLocalAggregationReply(&msg);
       } else if (ctrl.cmd == Control::LOCAL_AGGREGATION) {
         ProcessLocalAggregation(&msg);
       } else if (ctrl.cmd == Control::ASK_MODEL_RECEIVER) {
-        threadPool_.enqueue(&Van::ProcessAskModelReceiver, this, msg);
+        std::thread t(&Van::ProcessAskModelReceiver, this, msg);
+        t.detach();
       } else if (ctrl.cmd == Control::ASK_MODEL_RECEIVER_REPLY) {
         ProcessAskModelReceiverReply(&msg);
       } else if (ctrl.cmd == Control::MODEL_DISTRIBUTION) {
