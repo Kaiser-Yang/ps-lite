@@ -1223,7 +1223,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           PS_VLOG(1) << "WAITING INFO: "
             << "receiving_nodes.count(server): "
             << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-          return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
+          return receiving_nodes_.empty();
         });
       }
       ProcessAskLocalAggregation(msg);
@@ -1264,7 +1264,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
             PS_VLOG(1) << "WAITING INFO:"
               << " receiving_nodes.count(server): "
               << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-            return !receiving_nodes_.count(Postoffice::ServerRankToID(0));
+            return receiving_nodes_.empty();
           });
         }
         ProcessAskLocalAggregation(msg);
