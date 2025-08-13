@@ -1259,10 +1259,13 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       }
       ProcessAskLocalAggregation(msg);
     } else {
-      req.meta.recver = receiver_[requestor];
-      req.meta.control.cmd = Control::ASK_AS_RECEIVER;
-      Send(req);
-      bool ok = WaitForAskAsReceiverReply(req.meta.recver);
+      bool ok = false;
+      if (reachable_[{requestor, receiver_[requestor]}]) {
+        req.meta.recver = receiver_[requestor];
+        req.meta.control.cmd = Control::ASK_AS_RECEIVER;
+        Send(req);
+        ok = WaitForAskAsReceiverReply(req.meta.recver);
+      }
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
