@@ -403,6 +403,9 @@ void Van::Start(int customer_id) {
           << "GREED_RATE is not set, please set it before running the program.";
         CHECK(CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
         greed_rate_ = atof(greedRateStr);
+        receiving_limit_ = (Postoffice::Get()->num_servers() + Postoffice::Get()->num_workers()) / 10;
+        receiving_limit_ = std::max(receiving_limit_, 1);
+        receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
@@ -1132,8 +1135,16 @@ void Van::AskLocalAggregation() {
 }
 
 void Van::CheckModelAggregationFinish() {
+  static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(), 
+    aggregation_end_time_ = std::chrono::high_resolution_clock::now();
+  static auto continuous_increase = 0, continuous_decrease = 0;
+  constexpr static auto delta = 0.05;
+  if (num_ma_ == 0) {
+    aggregation_start_time_ = std::chrono::high_resolution_clock::now();
+  }
   num_ma_++;
   if (num_ma_ != Postoffice::Get()->num_workers()) { return; }
+  aggregation_end_time_ = std::chrono::high_resolution_clock::now();
   num_ma_ = 0;
   auto &unreceived_nodes_ = unreceived_nodes_ma_;
   auto &receiver_ = receiver_ma_;
@@ -1141,9 +1152,23 @@ void Van::CheckModelAggregationFinish() {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
     receiver_[Postoffice::Get()->WorkerRankToID(i)] = UNKNOWN;
   }
-  // server may be in receiving_nodes_, so we need add it to unreceived_nodes_ manually.
   unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
   receiving_nodes_.clear();
+  const std::chrono::duration<double> diff = aggregation_end_time_ - aggregation_start_time_;
+  const int current_time_cost = int(diff.count() * 1000);
+  if (aggregation_time_cost_ == -1) {
+  } else if (current_time_cost > (1 + delta) * aggregation_time_cost_) {
+    continuous_decrease++;
+    continuous_increase = 0;
+    receiving_limit_ -= continuous_decrease;
+    receiving_limit_ = std::max(receiving_limit_, 1);
+  } else if (current_time_cost < (1 - delta) * aggregation_time_cost_) {
+    continuous_increase++;
+    continuous_decrease = 0;
+    receiving_limit_ += continuous_increase;
+    receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
+  }
+  aggregation_time_cost_ = (int(diff.count() * 1000));
 }
 
 // this will be excuted in another thread so the parameter should copy from the origin
@@ -1188,7 +1213,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       PS_VLOG(0) << "WAITING INFO: "
         << "unreceived_nodes.size: " << unreceived_nodes_.size()
         << " receiving_nodes.size: " << receiving_nodes_.size();
-      return unreceived_nodes_.size() == 1 && receiving_nodes_.size() == 0;
+      for (auto &node : receiving_nodes_) {
+        if (node.second >= receiving_limit_) { return false; }
+      }
+      return unreceived_nodes_.size() == 1;
     });
     model_aggregation_num_--;
     minimum_model_aggregation_num_--;
@@ -1223,7 +1251,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           PS_VLOG(0) << "WAITING INFO: "
             << "receiving_nodes.count(server): "
             << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-          return receiving_nodes_.empty();
+          for (auto &node : receiving_nodes_) {
+            if (node.second >= receiving_limit_) { return false; }
+          }
+          return true;
         });
       }
       ProcessAskLocalAggregation(msg);
@@ -1235,10 +1266,12 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
-        if (unreceived_nodes_.count(receiver_[requestor]) == 1) {
-          unreceived_nodes_.erase(receiver_[requestor]);
-          // receiving_nodes_.insert(receiver_[requestor]);
-        }
+        receiving_nodes_[receiver_[requestor]]++;
+        PS_VLOG(0) << "AGGREGATION INFO:"
+          << " requestor: " << requestor
+          << " receiver: " << receiver_[requestor]
+          << " receiving_nodes[" << receiver_[requestor] << "]: "
+          << receiving_nodes_[receiver_[requestor]];
         CheckModelAggregationFinish();
         Send(rpl);
       } else {
@@ -1264,7 +1297,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
             PS_VLOG(0) << "WAITING INFO:"
               << " receiving_nodes.count(server): "
               << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-            return receiving_nodes_.empty();
+            for (auto &node : receiving_nodes_) {
+              if (node.second >= receiving_limit_) { return false; }
+            }
+            return true;
           });
         }
         ProcessAskLocalAggregation(msg);
@@ -1278,7 +1314,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   for (int i = 0; i < postoffice->num_workers(); i++) {
     workerID = postoffice->WorkerRankToID(i);
     if (unreceived_nodes_.count(workerID) == 0 &&
-        receiving_nodes_.count(workerID) == 0 &&
+        receiving_nodes_[workerID] < receiving_limit_ &&
         receiver_[workerID] == UNKNOWN) {
       right_nodes_.insert(workerID);
     }
@@ -1687,14 +1723,18 @@ void Van::ProcessAskAsReceiver(Message *msg) {
 void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
   PS_VLOG(0) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from " << msg.meta.sender;
   std::unique_lock<std::mutex> locker{mu_ma_};
-  PS_VLOG(1) << msg.meta.sender << " finished receiving.";
   if (receiving_nodes_.count(msg.meta.sender) == 0) {
-    PS_VLOG(1) << "receiving_nodes.size: " << receiving_nodes_.size();
+    PS_VLOG(0) << msg.meta.sender << " finished receiving.";
+    PS_VLOG(0) << "receiving_nodes.size: " << receiving_nodes_.size();
     mman_cv_.notify_all();
     return;
   }
-  receiving_nodes_.erase(msg.meta.sender);
-  unreceived_nodes_ma_.insert(msg.meta.sender);
+  receiving_nodes_[msg.meta.sender]--;
+  PS_VLOG(0) << "receiving_nodes[" << msg.meta.sender << "]=" << receiving_nodes_[msg.meta.sender];
+  if (receiving_nodes_[msg.meta.sender] == 0) {
+    receiving_nodes_.erase(msg.meta.sender);
+    PS_VLOG(0) << msg.meta.sender << " finished receiving.";
+  }
   PS_VLOG(0) << "receiving_nodes.size: " << receiving_nodes_.size();
   mman_cv_.notify_all();
 }

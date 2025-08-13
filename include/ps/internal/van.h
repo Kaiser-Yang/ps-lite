@@ -261,7 +261,7 @@ class Van {
   // The condition variable for model distribution and model aggregation.
   std::condition_variable mman_cv_;
   // The nodes that are receiving models.
-  std::unordered_set<int> receiving_nodes_;
+  std::unordered_map<int, int> receiving_nodes_;
 
   // Mutex for bandwidth and lifetime.
   std::mutex mu_on_bw_lt_;
@@ -299,6 +299,8 @@ class Van {
   // The current version of the model.
   int iteration_ = 0;
   double greed_rate_;
+  int receiving_limit_;
+  int aggregation_time_cost_{-1};
   std::vector<std::vector<int>> A;
   std::vector<int> B;
   std::vector<int> B1;
