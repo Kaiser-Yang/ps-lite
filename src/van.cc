@@ -1237,7 +1237,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
         if (unreceived_nodes_.count(receiver_[requestor]) == 1) {
           unreceived_nodes_.erase(receiver_[requestor]);
-          receiving_nodes_.insert(receiver_[requestor]);
+          // receiving_nodes_.insert(receiver_[requestor]);
         }
         CheckModelAggregationFinish();
         Send(rpl);
