@@ -1313,8 +1313,9 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   int workerID = 0;
   for (int i = 0; i < postoffice->num_workers(); i++) {
     workerID = postoffice->WorkerRankToID(i);
+    const auto receiving_limit_ok = receiving_nodes_.count(workerID) == 0 || receiving_nodes_[workerID] < receiving_limit_;
     if (unreceived_nodes_.count(workerID) == 0 &&
-        receiving_nodes_[workerID] < receiving_limit_ &&
+        receiving_limit_ok &&
         receiver_[workerID] == UNKNOWN) {
       right_nodes_.insert(workerID);
     }
