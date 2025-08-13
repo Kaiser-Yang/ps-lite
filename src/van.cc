@@ -1137,7 +1137,7 @@ void Van::AskLocalAggregation() {
 void Van::CheckModelAggregationFinish() {
   static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(), 
     aggregation_end_time_ = std::chrono::high_resolution_clock::now();
-  static auto continuous_increase = 0, continuous_decrease = 0;
+  static auto continuous_increase = receiving_limit_, continuous_decrease = 0;
   constexpr static auto delta = 0.05;
   if (num_ma_ == 0) {
     aggregation_start_time_ = std::chrono::high_resolution_clock::now();
@@ -1155,21 +1155,24 @@ void Van::CheckModelAggregationFinish() {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
     receiver_[Postoffice::Get()->WorkerRankToID(i)] = UNKNOWN;
   }
+  mman_cv_.notify_all();
   const std::chrono::duration<double> diff = aggregation_end_time_ - aggregation_start_time_;
   const int current_time_cost = int(diff.count() * 1000);
-  if (aggregation_time_cost_ == -1) {
-  } else if (current_time_cost > (1 + delta) * aggregation_time_cost_) {
+  if (aggregation_time_cost_ < 0) {
+  } else if (current_time_cost > (1 + delta) * aggregation_time_cost_ && continuous_increase ||
+      current_time_cost < (1 - delta) * aggregation_time_cost_ && continuous_decrease) {
     continuous_decrease++;
     continuous_increase = 0;
     receiving_limit_ -= continuous_decrease;
     receiving_limit_ = std::max(receiving_limit_, 1);
-  } else if (current_time_cost < (1 - delta) * aggregation_time_cost_) {
+  } else if (current_time_cost < (1 - delta) * aggregation_time_cost_ && continuous_increase ||
+      current_time_cost > (1 + delta) * aggregation_time_cost_ && continuous_decrease) {
     continuous_increase++;
     continuous_decrease = 0;
     receiving_limit_ += continuous_increase;
     receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
   }
-  aggregation_time_cost_ = (int(diff.count() * 1000));
+  aggregation_time_cost_ = current_time_cost;
 }
 
 // this will be excuted in another thread so the parameter should copy from the origin
@@ -1189,6 +1192,14 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   rpl.meta.control.cmd = Control::ASK_LOCAL_AGGREGATION_REPLY;
   int requestor = msg.meta.sender;
   Postoffice *postoffice = Postoffice::Get();
+  // This is to avoid the next iteration influence the current iteration.
+  {
+    std::unique_lock<std::mutex> locker{mman_cv_mu_};
+    mman_cv_.wait(locker, [this, requestor, &mu_, &unreceived_nodes_]() -> bool {
+        std::unique_lock<std::mutex> locker{mu_};
+        return unreceived_nodes_.count(requestor);
+    });
+  }
   {
     // this mean if there are nodes more than minimum_model_aggregation_num_,
     // we should wait for previous scheduling finishment.
@@ -1200,13 +1211,13 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     {
       std::unique_lock<std::mutex> locker{mu_};
       unreceived_nodes_.erase(requestor);
+      PS_VLOG(0) << "AGGREGATION INFO:"
+        << " requestor: " << requestor
+        << " model_aggregation_num: " << model_aggregation_num_
+        << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
+        << " unreceived_nodes.size: " << unreceived_nodes_.size()
+        << " receiving_nodes.size: " << receiving_nodes_.size();
     }
-    PS_VLOG(0) << "AGGREGATION INFO:"
-      << " requestor: " << requestor
-      << " model_aggregation_num: " << model_aggregation_num_
-      << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
-      << " unreceived_nodes.size: " << unreceived_nodes_.size()
-      << " receiving_nodes.size: " << receiving_nodes_.size();
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
@@ -1260,7 +1271,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       ProcessAskLocalAggregation(msg);
     } else {
       bool ok = false;
-      if (reachable_[{requestor, receiver_[requestor]}]) {
+      if (receiving_nodes_.count(receiver_[requestor]) == 0 || receiving_nodes_[receiver_[requestor]] < receiving_limit_) {
         req.meta.recver = receiver_[requestor];
         req.meta.control.cmd = Control::ASK_AS_RECEIVER;
         Send(req);
@@ -1313,13 +1324,9 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   }
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
-  int workerID = 0;
   for (int i = 0; i < postoffice->num_workers(); i++) {
-    workerID = postoffice->WorkerRankToID(i);
-    const auto receiving_limit_ok = receiving_nodes_.count(workerID) == 0 || receiving_nodes_[workerID] < receiving_limit_;
-    if (unreceived_nodes_.count(workerID) == 0 &&
-        receiving_limit_ok &&
-        receiver_[workerID] == UNKNOWN) {
+    int workerID = postoffice->WorkerRankToID(i);
+    if (unreceived_nodes_.count(workerID) == 0 && receiver_[workerID] == UNKNOWN) {
       right_nodes_.insert(workerID);
     }
   }
@@ -1756,14 +1763,12 @@ void Van::DecreaseNumAsReceiver() {
   std::lock_guard<std::mutex> locker{cv_mu_};
   num_as_receiver_--;
   PS_VLOG(0) << "num_as_receiver: " << num_as_receiver_;
-  if (num_as_receiver_ == 0) {
-    Message req;
-    req.meta.sender = my_node_.id;
-    req.meta.recver = kScheduler;
-    req.meta.control.cmd = Control::FINISH_RECEIVING_LOCAL_AGGREGATION;
-    Send(req);
-    cv_.notify_all();
-  }
+  Message req;
+  req.meta.sender = my_node_.id;
+  req.meta.recver = kScheduler;
+  req.meta.control.cmd = Control::FINISH_RECEIVING_LOCAL_AGGREGATION;
+  Send(req);
+  if (num_as_receiver_ == 0) { cv_.notify_all(); }
 }
 
 void Van::ProcessLocalAggregation(Message *msg) {
