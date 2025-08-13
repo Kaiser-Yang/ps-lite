@@ -1264,7 +1264,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       Send(req);
       bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
-        PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << receiver_[requestor];
+        PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
         receiving_nodes_[receiver_[requestor]]++;
         PS_VLOG(0) << "AGGREGATION INFO:"
@@ -1714,8 +1714,8 @@ void Van::ProcessAskAsReceiver(Message *msg) {
   rpl.meta.control.cmd = Control::ASK_AS_RECEIVER_REPLY;
   {
     std::lock_guard<std::mutex> locker{cv_mu_};
-    rpl.meta.ask_as_receiver_status = (num_as_receiver_ == 0 && can_be_receiver_);
-    if (num_as_receiver_ == 0 && can_be_receiver_) { num_as_receiver_++; }
+    rpl.meta.ask_as_receiver_status = can_be_receiver_;
+    if (can_be_receiver_) { num_as_receiver_++; }
   }
   Send(rpl);
 }
