@@ -71,7 +71,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
           node.hostname + ":" + std::to_string(node.port);
       if (connected_nodes_.find(node_host_ip) == connected_nodes_.end()) {
         if (enable_le_method && node.id != Node::kEmpty) {
-          PS_VLOG(1) << "assign rank=" << node.id << " to node " << node.DebugString();
+          PS_VLOG(0) << "assign rank=" << node.id << " to node " << node.DebugString();
           Connect(node);
           Postoffice::Get()->UpdateHeartbeat(node.id, t);
           connected_nodes_[node_host_ip] = node.id;
@@ -81,7 +81,7 @@ void Van::ProcessAddNodeCommandAtScheduler(Message* msg, Meta* nodes,
         int id = node.role == Node::SERVER
                      ? Postoffice::ServerRankToID(num_servers_)
                      : Postoffice::WorkerRankToID(num_workers_);
-        PS_VLOG(1) << "assign rank=" << id << " to node " << node.DebugString();
+        PS_VLOG(0) << "assign rank=" << id << " to node " << node.DebugString();
         node.id = id;
         Connect(node);
         Postoffice::Get()->UpdateHeartbeat(node.id, t);
@@ -266,7 +266,7 @@ void Van::ProcessAddNodeCommand(Message* msg, Meta* nodes,
   } else {
     for (const auto& node : ctrl.node) {
       std::string addr_str = node.hostname + ":" + std::to_string(node.port);
-      PS_VLOG(1) << "node " << node.id << " with address "
+      PS_VLOG(0) << "node " << node.id << " with address "
                 << addr_str << " is added";
       if (connected_nodes_.find(addr_str) == connected_nodes_.end()) {
         Connect(node);
@@ -312,7 +312,7 @@ void Van::Start(int customer_id) {
       CHECK(lemethod_connection_type_ >= 0 &&
             lemethod_connection_type_ <= 2) <<
             "the value of LEMETHOD_CONNECTION_TYPE is invalid, and it must be between [0, 2].";
-      PS_VLOG(1) << "set LEMETHOD_CONNECTION_TYPE: " << lemethod_connection_type_;
+      PS_VLOG(0) << "set LEMETHOD_CONNECTION_TYPE: " << lemethod_connection_type_;
       // make sure all the workers can reach the server
       // and the server can reach all the workers
       int serverID = Postoffice::Get()->ServerRankToID(0);
@@ -410,7 +410,7 @@ void Van::Start(int customer_id) {
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
         int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
-        PS_VLOG(1) << "max node id: " << maxNodeID;
+        PS_VLOG(0) << "max node id: " << maxNodeID;
         for (int i = 0; i < maxNodeID; i++) {
           bandwidth_.emplace_back(maxNodeID, 0);
           lifetime_.emplace_back(maxNodeID, UNKNOWN);
@@ -1028,7 +1028,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
   Postoffice* postoffice = Postoffice::Get();
   if (msg.meta.last_receiver != UNKNOWN) {
     std::lock_guard<std::mutex> locker{mu_on_bw_lt_};
-    PS_VLOG(1) << "detect bandwidth([from][to][bandwidth]): " << requestor << ' '
+    PS_VLOG(0) << "detect bandwidth([from][to][bandwidth]): " << requestor << ' '
       << msg.meta.last_receiver << ' ' << msg.meta.last_bandwidth;
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
@@ -1061,7 +1061,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
     if (!reachable_[{requestor, receiver_[requestor]}]) {
       receiver_[requestor] = QUIT;
     }
-    PS_VLOG(1) << "MODEL DISTRIBUTION([sender][receiver]): "
+    PS_VLOG(0) << "MODEL DISTRIBUTION([sender][receiver]): "
       << requestor << ' ' << receiver_[requestor];
     rpl.meta.model_receiver = receiver_[requestor];
     if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
@@ -1069,7 +1069,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
     Send(rpl);
     return;
   }
-  PS_VLOG(1) << requestor <<  " starts to schedule.";
+  PS_VLOG(0) << requestor <<  " starts to schedule.";
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
   int workerID = 0;
@@ -1115,7 +1115,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
           unreceived_nodes_.erase(receiver_[rightNode]);
         }
       }
-      PS_VLOG(1) << "REACHABLE INFO([sender][receiver][reachable]): " << rightNode
+      PS_VLOG(0) << "REACHABLE INFO([sender][receiver][reachable]): " << rightNode
                 << ' ' << receiver_[rightNode] << ' '
                 << reachable_[{rightNode, receiver_[rightNode]}];
     }
@@ -1176,7 +1176,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       unreceived_nodes_.erase(requestor);
       receiving_nodes_.erase(requestor);
     }
-    PS_VLOG(1) << "AGGREGATION INFO:"
+    PS_VLOG(0) << "AGGREGATION INFO:"
       << " requestor: " << requestor
       << " model_aggregation_num: " << model_aggregation_num_
       << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
@@ -1185,7 +1185,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
-      PS_VLOG(1) << "WAITING INFO: "
+      PS_VLOG(0) << "WAITING INFO: "
         << "unreceived_nodes.size: " << unreceived_nodes_.size()
         << " receiving_nodes.size: " << receiving_nodes_.size();
       return unreceived_nodes_.size() == 1 && receiving_nodes_.size() == 0;
@@ -1203,7 +1203,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
     if (receiver_[requestor] == UNMATCHED) {
-      PS_VLOG(1) << requestor << " didn't find receiver,"
+      PS_VLOG(0) << requestor << " didn't find receiver,"
         << " so " << requestor << " will be rescheduled.";
       receiver_[requestor] = UNKNOWN;
       // this insert is necessary
@@ -1220,7 +1220,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         std::unique_lock<std::mutex> locker{mman_cv_mu_};
         mman_cv_.wait(locker, [this, &mu_]() -> bool {
           std::unique_lock<std::mutex> locker{mu_};
-          PS_VLOG(1) << "WAITING INFO: "
+          PS_VLOG(0) << "WAITING INFO: "
             << "receiving_nodes.count(server): "
             << receiving_nodes_.count(Postoffice::ServerRankToID(0));
           return receiving_nodes_.empty();
@@ -1233,7 +1233,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       Send(req);
       bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
-        PS_VLOG(1) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << receiver_[requestor];
+        PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
         if (unreceived_nodes_.count(receiver_[requestor]) == 1) {
           unreceived_nodes_.erase(receiver_[requestor]);
@@ -1242,7 +1242,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         CheckModelAggregationFinish();
         Send(rpl);
       } else {
-        PS_VLOG(1) << receiver_[requestor] << " rejected as a receiver,"
+        PS_VLOG(0) << receiver_[requestor] << " rejected as a receiver,"
           << " so " << requestor << " will be rescheduled.";
         // this insert is necessary
         // because without the insert, requestor will join next scheduling,
@@ -1261,7 +1261,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           std::unique_lock<std::mutex> locker{mman_cv_mu_};
           mman_cv_.wait(locker, [this, &mu_]() -> bool {
             std::unique_lock<std::mutex> locker{mu_};
-            PS_VLOG(1) << "WAITING INFO:"
+            PS_VLOG(0) << "WAITING INFO:"
               << " receiving_nodes.count(server): "
               << receiving_nodes_.count(Postoffice::ServerRankToID(0));
             return receiving_nodes_.empty();
@@ -1324,7 +1324,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         right_nodes_.erase(toLeftNode);
         // make sure the toLeftNode reschedule.
         receiver_[toLeftNode] = UNMATCHED;
-        PS_VLOG(1) << "move " << toLeftNode << " to left nodes.";
+        PS_VLOG(0) << "move " << toLeftNode << " to left nodes.";
       }
     }
     if (right_nodes_.size() <= left_nodes_.size()) {
@@ -1544,7 +1544,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
   }
   int matchNum = 0;
   Hungrian(leftNodes, rightNodes, connected, match, matchNum);
-  PS_VLOG(1) << "match_num: " <<  matchNum <<  " bisect_left: " <<  l <<  " bisect_right: " << r;
+  PS_VLOG(0) << "match_num: " <<  matchNum <<  " bisect_left: " <<  l <<  " bisect_right: " << r;
   if (matchNum == 0 || matchNum == 1) { return; }
   int tempMatchNum = 0;
   std::vector<std::vector<bool>> tempConnected;
@@ -1561,7 +1561,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
     if (tempMatchNum >= matchNum) { l = mid + 1; }
     else { r = mid - 1; }
   }
-  PS_VLOG(1) << "the limit is: " << r;
+  PS_VLOG(0) << "the limit is: " << r;
   for (const int &leftNode : leftNodes) {
     for (const int &rightNode : rightNodes) {
       if (edgeWeight[leftNode][rightNode] >= r) { continue; }
@@ -1570,7 +1570,7 @@ void Van::MaxMinEdgeWeightMatch(std::unordered_set<int> &leftNodes, std::unorder
   }
   matchNum = 0;
   Hungrian(leftNodes, rightNodes, connected, match, matchNum);
-  PS_VLOG(1) << "the final matchNum: " << matchNum;
+  PS_VLOG(0) << "the final matchNum: " << matchNum;
 }
 
 bool Van::CanToInteger(const char *str) {
@@ -1671,7 +1671,7 @@ void Van::WaitForLocalAggregationFinish() {
 }
 
 void Van::ProcessAskAsReceiver(Message *msg) {
-  PS_VLOG(1) << my_node_.id << " received ASK_AS_RECEIVER msg.";
+  PS_VLOG(0) << my_node_.id << " received ASK_AS_RECEIVER msg.";
   Message rpl;
   rpl.meta.sender = my_node_.id;
   rpl.meta.recver = kScheduler;
@@ -1685,7 +1685,7 @@ void Van::ProcessAskAsReceiver(Message *msg) {
 }
 
 void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
-  PS_VLOG(1) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from" << msg.meta.sender;
+  PS_VLOG(0) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from " << msg.meta.sender;
   std::unique_lock<std::mutex> locker{mu_ma_};
   PS_VLOG(1) << msg.meta.sender << " finished receiving.";
   if (receiving_nodes_.count(msg.meta.sender) == 0) {
@@ -1695,7 +1695,7 @@ void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
   }
   receiving_nodes_.erase(msg.meta.sender);
   unreceived_nodes_ma_.insert(msg.meta.sender);
-  PS_VLOG(1) << "receiving_nodes.size: " << receiving_nodes_.size();
+  PS_VLOG(0) << "receiving_nodes.size: " << receiving_nodes_.size();
   mman_cv_.notify_all();
 }
 
@@ -1712,10 +1712,10 @@ bool Van::IsServerNode() {
 }
 
 void Van::DecreaseNumAsReceiver() {
-  PS_VLOG(1) << my_node_.id <<  " DecreaseNumAsReceiver.";
+  PS_VLOG(0) << my_node_.id <<  " DecreaseNumAsReceiver.";
   std::lock_guard<std::mutex> locker{cv_mu_};
   num_as_receiver_--;
-  PS_VLOG(1) << "num_as_receiver: " << num_as_receiver_;
+  PS_VLOG(0) << "num_as_receiver: " << num_as_receiver_;
   if (num_as_receiver_ == 0) {
     Message req;
     req.meta.sender = my_node_.id;
