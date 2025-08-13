@@ -1148,12 +1148,13 @@ void Van::CheckModelAggregationFinish() {
   num_ma_ = 0;
   auto &unreceived_nodes_ = unreceived_nodes_ma_;
   auto &receiver_ = receiver_ma_;
+  CHECK_EQ(unreceived_nodes_.size(), 1) << "Should only have server still in unreceived nodes.";
+  CHECK_EQ(*unreceived_nodes_.begin(), Postoffice::Get()->ServerRankToID(0))
+    << "Server should be the only unreceived node.";
   for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
     unreceived_nodes_.insert(Postoffice::Get()->WorkerRankToID(i));
     receiver_[Postoffice::Get()->WorkerRankToID(i)] = UNKNOWN;
   }
-  unreceived_nodes_.insert(Postoffice::Get()->ServerRankToID(0));
-  receiving_nodes_.clear();
   const std::chrono::duration<double> diff = aggregation_end_time_ - aggregation_start_time_;
   const int current_time_cost = int(diff.count() * 1000);
   if (aggregation_time_cost_ == -1) {
@@ -1199,7 +1200,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     {
       std::unique_lock<std::mutex> locker{mu_};
       unreceived_nodes_.erase(requestor);
-      receiving_nodes_.erase(requestor);
     }
     PS_VLOG(0) << "AGGREGATION INFO:"
       << " requestor: " << requestor
@@ -1727,12 +1727,8 @@ void Van::ProcessAskAsReceiver(Message *msg) {
 void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
   PS_VLOG(0) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from " << msg.meta.sender;
   std::unique_lock<std::mutex> locker{mu_ma_};
-  if (receiving_nodes_.count(msg.meta.sender) == 0) {
-    PS_VLOG(0) << msg.meta.sender << " finished receiving.";
-    PS_VLOG(0) << "receiving_nodes.size: " << receiving_nodes_.size();
-    mman_cv_.notify_all();
-    return;
-  }
+  CHECK(receiving_nodes_.count(msg.meta.sender) > 0)
+    << "sender " << msg.meta.sender << " is not in receiving_nodes_";
   receiving_nodes_[msg.meta.sender]--;
   PS_VLOG(0) << "receiving_nodes[" << msg.meta.sender << "]=" << receiving_nodes_[msg.meta.sender];
   if (receiving_nodes_[msg.meta.sender] == 0) {
