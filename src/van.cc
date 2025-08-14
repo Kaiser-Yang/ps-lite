@@ -1229,18 +1229,21 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       }
       return unreceived_nodes_.size() == 1;
     });
-    model_aggregation_num_--;
-    minimum_model_aggregation_num_--;
-    // This means that this is the last turn, we just change the minimum_model_aggregation_num,
-    // Doing this can make next wait() don't lock mu_ and make sure minimum_model_aggregation_num decrease to 0.
-    if (model_aggregation_num_ < minimum_model_aggregation_num_) { minimum_model_aggregation_num_ = model_aggregation_num_; }
-    mman_cv_.notify_all();
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
   std::lock(locker1, locker2);
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
+    {
+      std::unique_lock<std::mutex> locker{mman_cv_mu_};
+      model_aggregation_num_--;
+      minimum_model_aggregation_num_--;
+      // This means that this is the last turn, we just change the minimum_model_aggregation_num,
+      // Doing this can make next wait() don't lock mu_ and make sure minimum_model_aggregation_num decrease to 0.
+      if (model_aggregation_num_ < minimum_model_aggregation_num_) { minimum_model_aggregation_num_ = model_aggregation_num_; }
+      mman_cv_.notify_all();
+    }
     if (receiver_[requestor] == UNMATCHED) {
       PS_VLOG(0) << requestor << " didn't find receiver,"
         << " so " << requestor << " will be rescheduled.";
