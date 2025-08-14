@@ -1201,23 +1201,26 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     });
   }
   {
-    // this mean if there are nodes more than minimum_model_aggregation_num_,
+    // If there are nodes more than or equal to minimum_model_aggregation_num_,
     // we should wait for previous scheduling finishment.
     std::unique_lock<std::mutex> locker{mman_cv_mu_};
     mman_cv_.wait(locker, [this]() -> bool {
       return model_aggregation_num_ < minimum_model_aggregation_num_;
     });
     model_aggregation_num_++;
-    {
-      std::unique_lock<std::mutex> locker{mu_};
-      unreceived_nodes_.erase(requestor);
-      PS_VLOG(0) << "AGGREGATION INFO:"
-        << " requestor: " << requestor
-        << " model_aggregation_num: " << model_aggregation_num_
-        << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
-        << " unreceived_nodes.size: " << unreceived_nodes_.size()
-        << " receiving_nodes.size: " << receiving_nodes_.size();
-    }
+  }
+  {
+    std::unique_lock<std::mutex> locker{mu_};
+    unreceived_nodes_.erase(requestor);
+    PS_VLOG(0) << "AGGREGATION INFO:"
+      << " requestor: " << requestor
+      << " model_aggregation_num: " << model_aggregation_num_
+      << " minimum_model_aggregation_num: " << minimum_model_aggregation_num_
+      << " unreceived_nodes.size: " << unreceived_nodes_.size()
+      << " receiving_nodes.size: " << receiving_nodes_.size();
+  }
+  {
+    std::unique_lock<std::mutex> locker{mman_cv_mu_};
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
       if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
@@ -1229,6 +1232,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       }
       return unreceived_nodes_.size() == 1;
     });
+    mman_cv_.notify_all();
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
@@ -1236,6 +1240,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
     {
+      locker1.unlock();
+      locker2.unlock();
       std::unique_lock<std::mutex> locker{mman_cv_mu_};
       model_aggregation_num_--;
       minimum_model_aggregation_num_--;
@@ -1245,6 +1251,19 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (model_aggregation_num_ == 0) {
         minimum_model_aggregation_num_ = schedule_num_;
         mman_cv_.notify_all();
+      }
+      std::lock(locker1, locker2);
+    }
+    if (receiver_[requestor] == UNMATCHED) {
+      PS_VLOG(0) << "Try to use server as receiver for " << requestor
+        << " because it is unmatched.";
+      auto serverId = Postoffice::ServerRankToID(0);
+      if (!receiving_nodes_.count(serverId) ||
+          receiving_nodes_[serverId] < receiving_limit_) {
+        receiver_[requestor] = serverId;
+        PS_VLOG(0) << "Server is used as receiver for " << requestor;
+      } else {
+        PS_VLOG(0) << "Failed to use server as receiver for " << requestor;
       }
     }
     if (receiver_[requestor] == UNMATCHED) {
@@ -1263,7 +1282,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       // which will cause stack overflow
       {
         std::unique_lock<std::mutex> locker{mman_cv_mu_};
-        mman_cv_.wait(locker, [this, &mu_]() -> bool {
+        mman_cv_.wait(locker, [this, &mu_, requestor]() -> bool {
           std::unique_lock<std::mutex> locker{mu_};
           PS_VLOG(0) << "WAITING INFO: "
             << "receiving_nodes.count(server): "
@@ -1271,11 +1290,13 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           for (auto &node : receiving_nodes_) {
             if (node.second >= receiving_limit_) { return false; }
           }
+          PS_VLOG(0) << requestor << " WAKES UP!";
           return true;
         });
       }
       ProcessAskLocalAggregation(msg);
     } else {
+    RequestAsReceiver:
       req.meta.recver = receiver_[requestor];
       req.meta.control.cmd = Control::ASK_AS_RECEIVER;
       Send(req);
@@ -1292,6 +1313,17 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         CheckModelAggregationFinish();
         Send(rpl);
       } else {
+        auto serverId = Postoffice::ServerRankToID(0);
+        CHECK_NE(receiver_[requestor], serverId)
+          << "Server will never reject to be a receiver.";
+        if (!receiving_nodes_.count(serverId) ||
+            receiving_nodes_[serverId] < receiving_limit_) {
+          receiver_[requestor] = serverId;
+          PS_VLOG(0) << "Server is used as receiver for " << requestor;
+          goto RequestAsReceiver;
+        } else {
+          PS_VLOG(0) << "Failed to use server as receiver for " << requestor;
+        }
         PS_VLOG(0) << receiver_[requestor] << " rejected as a receiver,"
           << " so " << requestor << " will be rescheduled.";
         // this insert is necessary
