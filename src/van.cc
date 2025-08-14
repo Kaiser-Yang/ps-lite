@@ -1270,13 +1270,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       }
       ProcessAskLocalAggregation(msg);
     } else {
-      bool ok = false;
-      if (receiving_nodes_.count(receiver_[requestor]) == 0 || receiving_nodes_[receiver_[requestor]] < receiving_limit_) {
-        req.meta.recver = receiver_[requestor];
-        req.meta.control.cmd = Control::ASK_AS_RECEIVER;
-        Send(req);
-        ok = WaitForAskAsReceiverReply(req.meta.recver);
-      }
+      req.meta.recver = receiver_[requestor];
+      req.meta.control.cmd = Control::ASK_AS_RECEIVER;
+      Send(req);
+      bool ok = WaitForAskAsReceiverReply(req.meta.recver);
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
@@ -1323,7 +1320,12 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     return;
   }
   left_nodes_.clear(); right_nodes_.clear();
-  for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
+  for (int leftNode : unreceived_nodes_) {
+    if (receiving_nodes_.count(receiver_[requestor]) == 0 ||
+        receiving_nodes_[receiver_[requestor]] < receiving_limit_) {
+      left_nodes_.insert(leftNode);
+    }
+  }
   for (int i = 0; i < postoffice->num_workers(); i++) {
     int workerID = postoffice->WorkerRankToID(i);
     if (unreceived_nodes_.count(workerID) == 0 && receiver_[workerID] == UNKNOWN) {
