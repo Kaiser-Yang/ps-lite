@@ -1242,7 +1242,10 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       // This means that this is the last turn, we just change the minimum_model_aggregation_num,
       // Doing this can make next wait() don't lock mu_ and make sure minimum_model_aggregation_num decrease to 0.
       if (model_aggregation_num_ < minimum_model_aggregation_num_) { minimum_model_aggregation_num_ = model_aggregation_num_; }
-      mman_cv_.notify_all();
+      if (model_aggregation_num_ == 0) {
+        minimum_model_aggregation_num_ = schedule_num_;
+        mman_cv_.notify_all();
+      }
     }
     if (receiver_[requestor] == UNMATCHED) {
       PS_VLOG(0) << requestor << " didn't find receiver,"
@@ -1396,17 +1399,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   for (const int &rightNode : right_nodes_) {
     if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = UNMATCHED; }
   }
-  locker1.unlock();
-  locker2.unlock();
-  {
-    std::unique_lock<std::mutex> locker{mman_cv_mu_};
-    mman_cv_.wait(locker, [this]() -> bool {
-      return minimum_model_aggregation_num_ == 0;
-    });
-    minimum_model_aggregation_num_ = schedule_num_;
-    mman_cv_.notify_all();
-  }
-  std::lock(locker1, locker2);
   goto SendOrReschedule;
 }
 
