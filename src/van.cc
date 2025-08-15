@@ -406,6 +406,7 @@ void Van::Start(int customer_id) {
         receiving_limit_ = (Postoffice::Get()->num_servers() + Postoffice::Get()->num_workers()) / 10;
         receiving_limit_ = std::max(receiving_limit_, 1);
         receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
+        PS_VLOG(0) << "Initialized the receiving limit to " << receiving_limit_;
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
@@ -1172,6 +1173,9 @@ void Van::CheckModelAggregationFinish() {
     receiving_limit_ += continuous_increase;
     receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
   }
+  PS_VLOG(0) << "New receiving limit: " << receiving_limit_
+    << " aggregation time cost: " << current_time_cost
+    << " previous time cost: " << aggregation_time_cost_;
   aggregation_time_cost_ = current_time_cost;
 }
 
@@ -1359,8 +1363,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   }
   left_nodes_.clear(); right_nodes_.clear();
   for (int leftNode : unreceived_nodes_) {
-    if (receiving_nodes_.count(receiver_[requestor]) == 0 ||
-        receiving_nodes_[receiver_[requestor]] < receiving_limit_) {
+    if (receiving_nodes_.count(leftNode) == 0 ||
+        receiving_nodes_[leftNode] < receiving_limit_) {
       left_nodes_.insert(leftNode);
     }
   }
