@@ -3,9 +3,12 @@
  */
 
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -333,6 +336,10 @@ void Van::Start(int customer_id) {
       std::string line, cmd;
       std::istringstream iss;
       int nodeRankA, nodeRankB;
+      auto max_bound = Postoffice::Get()->num_servers() + Postoffice::Get()->num_workers() - 1;
+      min_receiving_limit_ = std::min(2, max_bound);
+      max_receiving_limit_ = std::min(10, max_bound);
+      receiving_limit_ = max_bound / 10;
       while (std::getline(ifs, line)) {
         if (line.empty()) { continue; } // found empty lines, just skip
         iss = std::istringstream(line);
@@ -356,13 +363,40 @@ void Van::Start(int customer_id) {
         } else if (cmd == "SET_BANDWIDTH_EXPIRATION") {
           iss >> bandwidthExpirationTime_;
           CHECK(!iss.fail()) << "make sure bandwidthExpirationTime is an integer";
+        } else if (cmd == "SET_WINDOW_SIZE") {
+          iss >> window_size_;
+          CHECK(!iss.fail()) << "make sure window_size is an integer";
+        } else if (cmd == "SET_ALPHA") {
+          iss >> alpha_;
+          CHECK(!iss.fail()) << "make sure alpha is a number";
+        } else if (cmd == "SET_MIN_HISTORY") {
+          iss >> min_history_;
+          CHECK(!iss.fail()) << "make sure min_history is an integer";
+        } else if (cmd == "SET_RECEIVING_LIMIT") {
+          iss >> receiving_limit_;
+        } else if (cmd == "SET_MIN_RECEIVING_LIMIT") {
+          iss >> min_receiving_limit_;
+        } else if (cmd == "SET_MAX_RECEIVING_LIMIT") {
+          iss >> max_receiving_limit_;
         } else {
           LOG(WARNING) << "unknown command in lemethod conf file: " << cmd
             << ", please check the file: " << lemethodConfPath;
         }
       };
+      CHECK(min_receiving_limit_ > 0) <<
+        "MIN_RECEIVING_LIMIT must be greater than 0.";
+      CHECK(max_receiving_limit_ >= min_receiving_limit_) <<
+        "MAX_RECEIVING_LIMIT must be greater than or equal to MIN_RECEIVING_LIMIT.";
+      CHECK(max_receiving_limit_ <= max_bound) <<
+        "MAX_RECEIVING_LIMIT must be less than or equal to DMLC_NUM_WORKER + DMLC_NUM_SERVER - 1.";
+      receiving_limit_ = std::max(receiving_limit_, min_receiving_limit_);
+      receiving_limit_ = std::min(receiving_limit_, max_receiving_limit_);
+      PS_VLOG(0) << "Initialized the receiving limit to " << receiving_limit_;
+      CHECK(window_size_ > 0) << "WINDOW_SIZE must be greater than 0.";
+      CHECK(alpha_ >= 0 && alpha_ <= 1) << "ALPHA must be in [0, 1].";
       CHECK(bandwidthExpirationTime_ != UNKNOWN) <<
         "you must set BANDWIDTH_EXPIRATION_TIME in the lemethod conf file.";
+      CHECK(min_history_ > 0) << "MIN_HISTORY must be greater than 0.";
       CHECK(!(schedule_num_ == UNKNOWN && schedule_ratio_ == UNKNOWN)) <<
         "You must set SCHEDULE_NUM or SCHEDULE_RATIO in the lemethod conf file.";
       if (schedule_num_ == UNKNOWN) {
@@ -403,10 +437,6 @@ void Van::Start(int customer_id) {
           << "GREED_RATE is not set, please set it before running the program.";
         CHECK(CanToFloat(greedRateStr)) << "failed to convert GREED_RATE to float";
         greed_rate_ = atof(greedRateStr);
-        receiving_limit_ = (Postoffice::Get()->num_servers() + Postoffice::Get()->num_workers()) / 10;
-        receiving_limit_ = std::max(receiving_limit_, 1);
-        receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
-        PS_VLOG(0) << "Initialized the receiving limit to " << receiving_limit_;
         CHECK(greed_rate_ >= 0 && greed_rate_ <= 1) << "GREED_RATE must be in [0, 1]";
         for (int i = 0; i < Postoffice::Get()->num_workers(); i++) {
           unreceived_nodes_ma_.insert(Postoffice::Get()->WorkerRankToID(i));
@@ -1135,10 +1165,34 @@ void Van::AskLocalAggregation() {
   Send(msg);
 }
 
+void Van::UpdateTimeStats(int current_time) {
+  time_window_.push_back(current_time);
+  if (time_window_.size() > window_size_) {
+    time_window_.pop_front();
+  }
+  if (history_count_ == 0) {
+    ema_time_ = current_time;
+  } else {
+    ema_time_ = alpha_ * current_time + (1 - alpha_) * ema_time_;
+  }
+  if (history_count_ < min_history_) {
+      initial_time_ = (initial_time_ * history_count_ + current_time) / (history_count_ + 1);
+  }
+  history_count_++;
+  if (history_count_ >= 2) {
+      double mean = std::accumulate(time_window_.begin(), time_window_.end(), 0.0) / time_window_.size();
+      double variance = 0.0;
+      for (int t : time_window_) {
+          variance += (t - mean) * (t - mean);
+      }
+      variance /= time_window_.size();
+      sigma_ = std::sqrt(variance);
+  }
+}
+
 void Van::CheckModelAggregationFinish() {
   static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(), 
     aggregation_end_time_ = std::chrono::high_resolution_clock::now();
-  static auto continuous_increase = receiving_limit_, continuous_decrease = 0;
   constexpr static auto delta = 0.05;
   if (num_ma_ == 0) {
     aggregation_start_time_ = std::chrono::high_resolution_clock::now();
@@ -1159,20 +1213,29 @@ void Van::CheckModelAggregationFinish() {
   mman_cv_.notify_all();
   const std::chrono::duration<double> diff = aggregation_end_time_ - aggregation_start_time_;
   const int current_time_cost = int(diff.count() * 1000);
-  if (aggregation_time_cost_ < 0) {
-  } else if (current_time_cost > (1 + delta) * aggregation_time_cost_ && continuous_increase ||
-      current_time_cost < (1 - delta) * aggregation_time_cost_ && continuous_decrease) {
-    continuous_decrease++;
-    continuous_increase = 0;
-    receiving_limit_ -= continuous_decrease;
-    receiving_limit_ = std::max(receiving_limit_, 1);
-  } else if (current_time_cost < (1 - delta) * aggregation_time_cost_ && continuous_increase ||
-      current_time_cost > (1 + delta) * aggregation_time_cost_ && continuous_decrease) {
-    continuous_increase++;
-    continuous_decrease = 0;
-    receiving_limit_ += continuous_increase;
-    receiving_limit_ = std::min(receiving_limit_, Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1);
+  UpdateTimeStats(current_time_cost);
+  if (history_count_ < min_history_) {
+      aggregation_time_cost_ = current_time_cost;
+      PS_VLOG(0) << "Not enough history data, current time cost: " << current_time_cost;
+      return;
   }
+  const double target_time = ema_time_;
+  const double error = current_time_cost - target_time;
+  if (sigma_ > 0 && std::abs(error) > 3 * sigma_) {
+      PS_VLOG(0) << "Ignore outlier time: " << current_time_cost 
+                 << " (mean: " << target_time << ", sigma: " << sigma_ << ")";
+      aggregation_time_cost_ = current_time_cost;
+      return;
+  }
+  const auto max_bound = Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1;
+  CHECK(initial_time_ > 0) << "Initial time should be greater than 0.";
+  const double dynamic_delta = delta * (target_time / initial_time_);
+  const bool is_significant_change = std::abs(error) > dynamic_delta * target_time;
+  if (is_significant_change) {
+    receiving_limit_ += error > 0 ? -1 : 1;
+  }
+  receiving_limit_ = std::max(receiving_limit_, min_receiving_limit_);
+  receiving_limit_ = std::min(receiving_limit_, max_receiving_limit_);
   PS_VLOG(0) << "New receiving limit: " << receiving_limit_
     << " aggregation time cost: " << current_time_cost
     << " previous time cost: " << aggregation_time_cost_;

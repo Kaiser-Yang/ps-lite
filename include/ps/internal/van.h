@@ -184,6 +184,7 @@ class Van {
   double max_greed_rate;
 
  private:
+  void UpdateTimeStats(int current_time);
   /** thread function for receving */
   void Receiving();
 
@@ -271,7 +272,23 @@ class Van {
   std::vector<std::vector<int>> lifetime_;
 
   static constexpr int INF = 0x3f3f3f3f;
+  // Size of the sliding window for tracking recent aggregation times
+  int window_size_ = 5;
+  // Smoothing factor for Exponential Moving Average (EMA) calculation
+  double alpha_ = 0.3;
+  // Minimum number of historical data points required for stable initialization
+  int min_history_ = 5;
 
+  // Sliding window storing the last WINDOW_SIZE aggregation time costs (in milliseconds)
+  std::deque<int> time_window_;
+  // Exponentially weighted moving average of aggregation times (smoothed historical trend)
+  double ema_time_ = -1.0;
+  // Counter tracking the total number of recorded historical aggregation times
+  int history_count_ = 0;
+  // Average aggregation time calculated during the initial MIN_HISTORY phase (used for threshold normalization)
+  double initial_time_ = 0;
+  // Standard deviation of historical aggregation times (for anomaly detection in time measurements)
+  double sigma_ = 0.0;
   // The mutex for scheduler to process requests and replies.
   std::mutex cv_mu_;
   // The condition variable for scheduler to wait for replies.
@@ -300,6 +317,8 @@ class Van {
   int iteration_ = 0;
   double greed_rate_;
   int receiving_limit_;
+  int min_receiving_limit_;
+  int max_receiving_limit_;
   int aggregation_time_cost_{-1};
   std::vector<std::vector<int>> A;
   std::vector<int> B;
