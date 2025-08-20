@@ -1031,8 +1031,14 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 }
 
 void Van::CheckModelDistributionFinish() {
+  static auto distribution_start_time_ = std::chrono::high_resolution_clock::now(), 
+    distribution_end_time_ = std::chrono::high_resolution_clock::now();
+  if (num_ma_ == 0) {
+    distribution_start_time_ = std::chrono::high_resolution_clock::now();
+  }
   num_md_++;
   if (num_md_ != Postoffice::Get()->num_workers() + 1) { return; }
+  distribution_end_time_ = std::chrono::high_resolution_clock::now();
   auto &unreceived_nodes_ = unreceived_nodes_md_;
   auto &receiver_ = receiver_md_;
   num_md_ = 0;
@@ -1042,6 +1048,9 @@ void Van::CheckModelDistributionFinish() {
   }
   for (auto &receiver : receiver_) { receiver = UNKNOWN; }
   CheckExpiration();
+  const std::chrono::duration<double> diff = distribution_end_time_ - distribution_start_time_;
+  const int current_time_cost = int(diff.count() * 1000);
+  PS_VLOG(0) << "time cost for distribution: " << int(diff.count() * 1000);
 }
 
 // this will be excuted in another thread so the parameter should copy from the origin
@@ -1084,14 +1093,12 @@ void Van::ProcessAskModelReceiver(Message msg) {
         }
       }
       receiver_[requestor] = maxBandwidthNode;
-      if (unreceived_nodes_.count(maxBandwidthNode)) { 
-        unreceived_nodes_.erase(maxBandwidthNode);
-      }
+      unreceived_nodes_.erase(maxBandwidthNode);
     }
   }
   if (receiver_[requestor] != UNKNOWN) {
   SendOrReschedule:
-    // when the receiver is not connected with requestor, we try to reschedule.
+    // when the receiver is not connected with requestor
     if (!reachable_[{requestor, receiver_[requestor]}]) {
       receiver_[requestor] = QUIT;
     }
@@ -1117,6 +1124,7 @@ void Van::ProcessAskModelReceiver(Message msg) {
   if (receiver_[psID] == UNKNOWN) {
     right_nodes_.insert(psID);
   }
+  PS_VLOG(0) << "Actual schedule num for distribution: " << right_nodes_.size();
   if (left_nodes_.size() > right_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
     KM(right_nodes_, left_nodes_, edge_weight_, match_);
