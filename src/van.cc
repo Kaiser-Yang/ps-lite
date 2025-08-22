@@ -1033,7 +1033,7 @@ void Van::AskModelReceiver(int lastBandwidth, int lastReceiver, int version) {
 void Van::CheckModelDistributionFinish() {
   static auto distribution_start_time_ = std::chrono::high_resolution_clock::now(), 
     distribution_end_time_ = std::chrono::high_resolution_clock::now();
-  if (num_ma_ == 0) {
+  if (num_md_ == 0) {
     distribution_start_time_ = std::chrono::high_resolution_clock::now();
   }
   num_md_++;
@@ -1050,7 +1050,7 @@ void Van::CheckModelDistributionFinish() {
   CheckExpiration();
   const std::chrono::duration<double> diff = distribution_end_time_ - distribution_start_time_;
   const int current_time_cost = int(diff.count() * 1000);
-  PS_VLOG(0) << "time cost for distribution: " << int(diff.count() * 1000);
+  PS_VLOG(0) << "time cost for distribution: " << current_time_cost;
 }
 
 // this will be excuted in another thread so the parameter should copy from the origin
