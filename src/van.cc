@@ -1090,6 +1090,19 @@ void Van::ProcessAskModelReceiver(Message msg) {
   }
   receiver_[requestor] = maxBandwidthNode;
   unreceived_nodes_.erase(maxBandwidthNode);
+  if (msg.meta.version > iteration_) {
+    // 10000 means that the minimum precsion for greed_rate_ is 0.0001
+    int randNumber = rand() % 10000;
+    if (receiver_[requestor] != QUIT && lifetime_[requestor][receiver_[requestor]] != UNKNOWN &&
+        randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
+      int newReceiver = RandomGetReceiver(requestor);
+      if (newReceiver != receiver_[requestor]) {
+        unreceived_nodes_.insert(receiver_[requestor]);
+        receiver_[requestor] = newReceiver;
+        unreceived_nodes_.erase(receiver_[requestor]);
+      }
+    }
+  }
   PS_VLOG(0) << "MODEL DISTRIBUTION([sender][receiver]): "
     << requestor << ' ' << receiver_[requestor];
   rpl.meta.model_receiver = receiver_[requestor];
