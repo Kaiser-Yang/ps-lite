@@ -1080,89 +1080,23 @@ void Van::ProcessAskModelReceiver(Message msg) {
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
   std::unique_lock<std::mutex> locker3(mmdn_cv_mu_, std::defer_lock);
   std::lock(locker1, locker2, locker3);
-  if (lemethod_connection_type_ == PS_CONNECTION_TYPE) {
-    if (requestor != postoffice->ServerRankToID(0)) {
-      receiver_[requestor] = QUIT;
-    } else {
-      int maxBandwidth = std::numeric_limits<int>::min();
-      int maxBandwidthNode = QUIT;
-      for (auto node : unreceived_nodes_) {
-        if (bandwidth_[requestor][node] > maxBandwidth) {
-          maxBandwidth = bandwidth_[requestor][node];
-          maxBandwidthNode = node;
-        }
-      }
-      receiver_[requestor] = maxBandwidthNode;
-      unreceived_nodes_.erase(maxBandwidthNode);
+  int maxBandwidth = std::numeric_limits<int>::min();
+  int maxBandwidthNode = QUIT;
+  for (auto node : unreceived_nodes_) {
+    if (reachable_[{requestor, node}] && bandwidth_[requestor][node] > maxBandwidth) {
+      maxBandwidth = bandwidth_[requestor][node];
+      maxBandwidthNode = node;
     }
   }
-  if (receiver_[requestor] != UNKNOWN) {
-  SendOrReschedule:
-    // when the receiver is not connected with requestor
-    if (!reachable_[{requestor, receiver_[requestor]}]) {
-      receiver_[requestor] = QUIT;
-    }
-    PS_VLOG(0) << "MODEL DISTRIBUTION([sender][receiver]): "
-      << requestor << ' ' << receiver_[requestor];
-    rpl.meta.model_receiver = receiver_[requestor];
-    if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
-    else { CheckModelDistributionFinish(); }
-    Send(rpl);
-    return;
-  }
-  PS_VLOG(0) << requestor <<  " starts to schedule.";
-  left_nodes_.clear(); right_nodes_.clear();
-  for (int leftNode : unreceived_nodes_) { left_nodes_.insert(leftNode); }
-  int workerID = 0;
-  for (int i = 0; i < postoffice->num_workers(); i++) {
-    workerID = postoffice->WorkerRankToID(i);
-    if (unreceived_nodes_.count(workerID) == 0 && receiver_[workerID] == UNKNOWN) {
-      right_nodes_.insert(workerID);
-    }
-  }
-  int psID = postoffice->ServerRankToID(0);
-  if (receiver_[psID] == UNKNOWN) {
-    right_nodes_.insert(psID);
-  }
-  PS_VLOG(0) << "Actual schedule num for distribution: " << right_nodes_.size();
-  if (left_nodes_.size() > right_nodes_.size()) {
-    GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
-    KM(right_nodes_, left_nodes_, edge_weight_, match_);
-    for (int leftNode : left_nodes_) { if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; } }
-    for (int rightNode : right_nodes_) { if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = QUIT; } }
-  } else {
-    GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
-    KM(left_nodes_, right_nodes_, edge_weight_, match_);
-    for (int rightNode : right_nodes_) {
-      if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
-      else { receiver_[rightNode] = QUIT; }
-    }
-  }
-
-  for (int rightNode : right_nodes_) {
-    if (unreceived_nodes_.count(receiver_[rightNode]) && reachable_[{rightNode, receiver_[rightNode]}]) {
-      unreceived_nodes_.erase(receiver_[rightNode]);
-    }
-  }
-  if (msg.meta.version > iteration_) { // if there are some unreceived nodes.
-    for (int rightNode : right_nodes_) {
-      // 10000 means that the minimum precsion for greed_rate_ is 0.0001
-      int randNumber = rand() % 10000;
-      if (receiver_[rightNode] != QUIT && lifetime_[rightNode][receiver_[rightNode]] != UNKNOWN &&
-          randNumber > greed_rate_ * 10000 && unreceived_nodes_.size() > 0) {
-        int newReceiver = RandomGetReceiver(rightNode);
-        if (newReceiver != receiver_[rightNode]) {
-          unreceived_nodes_.insert(receiver_[rightNode]);
-          receiver_[rightNode] = newReceiver;
-          unreceived_nodes_.erase(receiver_[rightNode]);
-        }
-      }
-      PS_VLOG(0) << "REACHABLE INFO([sender][receiver][reachable]): " << rightNode
-                << ' ' << receiver_[rightNode] << ' '
-                << reachable_[{rightNode, receiver_[rightNode]}];
-    }
-  }
-  goto SendOrReschedule;
+  receiver_[requestor] = maxBandwidthNode;
+  unreceived_nodes_.erase(maxBandwidthNode);
+  PS_VLOG(0) << "MODEL DISTRIBUTION([sender][receiver]): "
+    << requestor << ' ' << receiver_[requestor];
+  rpl.meta.model_receiver = receiver_[requestor];
+  if (receiver_[requestor] != QUIT) { receiver_[requestor] = UNKNOWN; }
+  else { CheckModelDistributionFinish(); }
+  Send(rpl);
+  return;
 }
 
 void Van::AskLocalAggregation() {
