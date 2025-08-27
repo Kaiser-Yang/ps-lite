@@ -1394,60 +1394,52 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   }
   if (right_nodes_.size() <= left_nodes_.size()) {
     GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
-    MaxMinEdgeWeightMatch(right_nodes_, left_nodes_, edge_weight_, match_, false);
+    KM(right_nodes_, left_nodes_, edge_weight_, match_);
     for (const int& leftNode : left_nodes_) {
       if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
     }
   } else {
-    GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
-    MaxMinEdgeWeightMatch(left_nodes_, right_nodes_, edge_weight_, match_);
-    for (const int &rightNode : right_nodes_) {
-      if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
-    }
-    int maxScore = std::numeric_limits<int>::min(), toLeftNode = UNKNOWN, score = std::numeric_limits<int>::max();
+    int maxScore = std::numeric_limits<int>::min(), toLeftNode = UNKNOWN, score = 0;
     {
       // ProcessAskModelReceiver may be running, so there is need to lock.
       std::lock_guard<std::mutex> locker3{mu_on_bw_lt_};
       int avg = GetAvgBandwidth(left_nodes_, right_nodes_);
-      while(left_nodes_.size() < right_nodes_.size()) {
-        maxScore = std::numeric_limits<int>::min(); toLeftNode = UNKNOWN, score = std::numeric_limits<int>::max();
+      while(right_nodes_.size() - left_nodes_.size() >= 2) {
+        maxScore = std::numeric_limits<int>::min(); toLeftNode = UNKNOWN, score = 0;
         for (const int &rightNode : right_nodes_) {
-          if (receiver_[rightNode] != UNKNOWN) { continue; }
-          score = std::numeric_limits<int>::max();
+          score = 0;
           for (int anotherRightNode : right_nodes_) {
             if (anotherRightNode == rightNode || !reachable_[{anotherRightNode, rightNode}]) { continue; }
             if (lifetime_[anotherRightNode][rightNode] == UNKNOWN) {
-              score = std::min(score, avg);
+              score += avg;
               continue;
             }
-            score = std::min(score, bandwidth_[anotherRightNode][rightNode]);
+            score += bandwidth_[anotherRightNode][rightNode];
+          }
+          for (int leftNode : left_nodes_) {
+            if (!reachable_[{rightNode, leftNode}]) { continue; }
+            if (lifetime_[rightNode][leftNode] == UNKNOWN) {
+              score -= avg;
+              continue;
+            }
+            score -= bandwidth_[rightNode][leftNode];
           }
           if (score > maxScore) {
             maxScore = score;
             toLeftNode = rightNode;
           }
         }
-        // when toLeftNode is UNKNOWN, this means that all the right nodes are not connected, so we just need to break.
-        if (toLeftNode == UNKNOWN) { break; }
         left_nodes_.insert(toLeftNode);
         right_nodes_.erase(toLeftNode);
-        // make sure the toLeftNode reschedule.
-        receiver_[toLeftNode] = UNMATCHED;
         PS_VLOG(0) << "move " << toLeftNode << " to left nodes.";
       }
     }
-    if (right_nodes_.size() <= left_nodes_.size()) {
-      GetEdgeWeight(right_nodes_, left_nodes_, edge_weight_, false);
-      MaxMinEdgeWeightMatch(right_nodes_, left_nodes_, edge_weight_, match_, false);
-      for (const int &leftNode : left_nodes_) {
-        if (match_[leftNode] != UNMATCHED) { receiver_[match_[leftNode]] = leftNode; }
-      }
-    } else {
-      GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
-      MaxMinEdgeWeightMatch(left_nodes_, right_nodes_, edge_weight_, match_);
-      for (const int &rightNode : right_nodes_) {
-        if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
-      }
+    CHECK_LE(left_nodes_.size(), right_nodes_.size())
+      << "Left nodes should be less than or equal to right nodes.";
+    GetEdgeWeight(left_nodes_, right_nodes_, edge_weight_);
+    KM(left_nodes_, right_nodes_, edge_weight_, match_);
+    for (const int &rightNode : right_nodes_) {
+      if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
     }
   }
   for (const int &rightNode : right_nodes_) {
