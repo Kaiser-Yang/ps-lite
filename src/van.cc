@@ -1244,15 +1244,16 @@ void Van::ProcessAskLocalAggregation(Message msg) {
   {
     std::unique_lock<std::mutex> locker{mman_cv_mu_};
     mman_cv_.wait(locker, [this, &unreceived_nodes_, &mu_]() -> bool {
-      if (model_aggregation_num_ == minimum_model_aggregation_num_) { return true; }
       std::unique_lock<std::mutex> locker{mu_};
       PS_VLOG(0) << "WAITING INFO: "
         << "unreceived_nodes.size: " << unreceived_nodes_.size()
         << " receiving_nodes.size: " << receiving_nodes_.size();
+      int cnt = unreceived_nodes_.size();
       for (auto &node : receiving_nodes_) {
-        if (node.second >= receiving_limit_) { return false; }
+        if (node.second >= receiving_limit_) { cnt--; }
       }
-      return unreceived_nodes_.size() == 1;
+      return (cnt >= model_aggregation_num_ || cnt == unreceived_nodes_.size()) &&
+        (model_aggregation_num_ == minimum_model_aggregation_num_ || unreceived_nodes_.size() == 1);
     });
     mman_cv_.notify_all();
   }
@@ -1309,20 +1310,21 @@ void Van::ProcessAskLocalAggregation(Message msg) {
           PS_VLOG(0) << "WAITING INFO: "
             << "receiving_nodes.count(server): "
             << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-          for (auto &node : receiving_nodes_) {
-            if (node.second >= receiving_limit_) { return false; }
-          }
-          PS_VLOG(0) << requestor << " WAKES UP!";
-          return true;
+          return receiving_nodes_.count(Postoffice::ServerRankToID(0)) == 0 ||
+            receiving_nodes_[Postoffice::ServerRankToID(0)] < receiving_limit_;
         });
       }
       ProcessAskLocalAggregation(msg);
     } else {
     RequestAsReceiver:
-      req.meta.recver = receiver_[requestor];
-      req.meta.control.cmd = Control::ASK_AS_RECEIVER;
-      Send(req);
-      bool ok = WaitForAskAsReceiverReply(req.meta.recver);
+      bool ok = false;
+      if (receiver_[requestor] == Postoffice::ServerRankToID(0)) { ok = true; }
+      else {
+        req.meta.recver = receiver_[requestor];
+        req.meta.control.cmd = Control::ASK_AS_RECEIVER;
+        Send(req);
+        ok = WaitForAskAsReceiverReply(req.meta.recver);
+      }
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
@@ -1335,6 +1337,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         CheckModelAggregationFinish();
         Send(rpl);
       } else {
+        PS_VLOG(0) << receiver_[requestor] << " rejected as a receiver,"
+          << " so " << requestor << " will be rescheduled.";
         auto serverId = Postoffice::ServerRankToID(0);
         CHECK_NE(receiver_[requestor], serverId)
           << "Server will never reject to be a receiver.";
@@ -1346,8 +1350,6 @@ void Van::ProcessAskLocalAggregation(Message msg) {
         } else {
           PS_VLOG(0) << "Failed to use server as receiver for " << requestor;
         }
-        PS_VLOG(0) << receiver_[requestor] << " rejected as a receiver,"
-          << " so " << requestor << " will be rescheduled.";
         // this insert is necessary
         // because without the insert, requestor will join next scheduling,
         // even if requestor is sleeping for receiving_nodes_.size() == 0
@@ -1368,10 +1370,8 @@ void Van::ProcessAskLocalAggregation(Message msg) {
             PS_VLOG(0) << "WAITING INFO:"
               << " receiving_nodes.count(server): "
               << receiving_nodes_.count(Postoffice::ServerRankToID(0));
-            for (auto &node : receiving_nodes_) {
-              if (node.second >= receiving_limit_) { return false; }
-            }
-            return true;
+            return receiving_nodes_.count(Postoffice::ServerRankToID(0)) == 0 ||
+              receiving_nodes_[Postoffice::ServerRankToID(0)] < receiving_limit_;
           });
         }
         ProcessAskLocalAggregation(msg);
