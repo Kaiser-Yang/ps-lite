@@ -1429,6 +1429,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
             toLeftNode = rightNode;
           }
         }
+        receiver_[toLeftNode] = UNMATCHED;
         left_nodes_.insert(toLeftNode);
         right_nodes_.erase(toLeftNode);
         PS_VLOG(0) << "move " << toLeftNode << " to left nodes.";
