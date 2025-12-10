@@ -1444,7 +1444,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
     }
   }
   for (const int &rightNode : right_nodes_) {
-    if (receiver_[rightNode] == UNKNOWN) { receiver_[rightNode] = UNMATCHED; }
+    if (receiver_[rightNode] == UNKNOWN || !Reachable(rightNode, receiver_[rightNode])) { receiver_[rightNode] = UNMATCHED; }
   }
   goto SendOrReschedule;
 }
