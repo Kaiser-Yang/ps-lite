@@ -272,6 +272,9 @@ class Van {
   std::vector<std::vector<int>> lifetime_;
 
   static constexpr int INF = 0x3f3f3f3f;
+  double delta_ = 0.05;
+  double enable_static_delta_ = false;
+  double static_delta_ = 0.05;
   // Size of the sliding window for tracking recent aggregation times
   int window_size_ = 5;
   // Smoothing factor for Exponential Moving Average (EMA) calculation

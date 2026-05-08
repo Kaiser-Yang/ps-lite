@@ -369,6 +369,13 @@ void Van::Start(int customer_id) {
         } else if (cmd == "SET_ALPHA") {
           iss >> alpha_;
           CHECK(!iss.fail()) << "make sure alpha is a number";
+        } else if (cmd == "SET_DELTA") {
+          iss >> delta_;
+          CHECK(!iss.fail()) << "make sure delta is a number";
+        } else if (cmd == "SET_STATIC_DELTA"){
+          iss >> static_delta_;
+          enable_static_delta_ = true;
+          CHECK(!iss.fail()) << "make sure static_delta is a number";
         } else if (cmd == "SET_MIN_HISTORY") {
           iss >> min_history_;
           CHECK(!iss.fail()) << "make sure min_history is an integer";
@@ -1148,7 +1155,6 @@ void Van::UpdateTimeStats(int current_time) {
 void Van::CheckModelAggregationFinish() {
   static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(), 
     aggregation_end_time_ = std::chrono::high_resolution_clock::now();
-  constexpr static auto delta = 0.05;
   if (num_ma_ == 0) {
     aggregation_start_time_ = std::chrono::high_resolution_clock::now();
   }
@@ -1184,7 +1190,10 @@ void Van::CheckModelAggregationFinish() {
   }
   const auto max_bound = Postoffice::Get()->num_workers() + Postoffice::Get()->num_servers() - 1;
   CHECK(initial_time_ > 0) << "Initial time should be greater than 0.";
-  const double dynamic_delta = delta * (target_time / initial_time_);
+  double dynamic_delta = delta_ * (target_time / initial_time_);
+  if (enable_static_delta_) {
+    dynamic_delta = static_delta_;
+  }
   const bool is_significant_change = std::abs(error) > dynamic_delta * target_time;
   if (is_significant_change) {
     receiving_limit_ += error > 0 ? -1 : 1;
