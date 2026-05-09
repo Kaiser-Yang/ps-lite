@@ -305,6 +305,7 @@ void Van::Start(int customer_id) {
     bool enableLemethod = get_bool_env("ENABLE_LEMETHOD");
     CHECK(!(enableTsengine && enableLemethod)) <<
           "you can not assign ENABLE_LEMETHOD and ENABLE_TSENGINE with 1 at the same time.";
+    int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
     if (enableLemethod) {
       const char *lemothodConnectionTypeVal = Environment::Get()->find("LEMETHOD_CONNECTION_TYPE");
       CHECK(lemothodConnectionTypeVal != nullptr)
@@ -417,6 +418,7 @@ void Van::Start(int customer_id) {
           }
         }
       }
+      receive_model_distribution_reply_.resize(maxNodeID, false);
     }
     // get my node info
     if (is_scheduler_) {
@@ -450,7 +452,6 @@ void Van::Start(int customer_id) {
           unreceived_nodes_md_.insert(Postoffice::Get()->WorkerRankToID(i));
         }
         unreceived_nodes_ma_.insert(Postoffice::Get()->ServerRankToID(0));
-        int maxNodeID = 2 * std::max(Postoffice::Get()->num_servers(), Postoffice::Get()->num_workers()) + 8;
         PS_VLOG(0) << "max node id: " << maxNodeID;
         for (int i = 0; i < maxNodeID; i++) {
           bandwidth_.emplace_back(maxNodeID, 0);
@@ -1082,6 +1083,9 @@ void Van::ProcessAskModelReceiver(Message msg) {
       << msg.meta.last_receiver << ' ' << msg.meta.last_bandwidth;
     bandwidth_[requestor][msg.meta.last_receiver] = msg.meta.last_bandwidth;
     lifetime_[requestor][msg.meta.last_receiver] = msg.meta.version;
+    rpl.meta.model_receiver = IGNORED;
+    Send(rpl);
+    return;
   }
   std::unique_lock<std::mutex> locker1{mu_, std::defer_lock};
   std::unique_lock<std::mutex> locker2{mutex_on_km_, std::defer_lock};
@@ -1089,15 +1093,22 @@ void Van::ProcessAskModelReceiver(Message msg) {
   std::lock(locker1, locker2, locker3);
   int maxBandwidth = std::numeric_limits<int>::min();
   int maxBandwidthNode = QUIT;
+  auto enable_distribution = getenv("ENABLE_DISTRIBUTION") == nullptr || atoi(getenv("ENABLE_DISTRIBUTION")) != 0;
   for (auto node : unreceived_nodes_) {
     if (reachable_[{requestor, node}] && bandwidth_[requestor][node] > maxBandwidth) {
       maxBandwidth = bandwidth_[requestor][node];
       maxBandwidthNode = node;
+      if (!enable_distribution) { break; }
+    }
+  }
+  if (!enable_distribution) {
+    if (requestor != Postoffice::Get()->ServerRankToID(0)) {
+      maxBandwidthNode = QUIT;
     }
   }
   receiver_[requestor] = maxBandwidthNode;
   unreceived_nodes_.erase(maxBandwidthNode);
-  if (msg.meta.version > iteration_) {
+  if (msg.meta.version > iteration_ && enable_distribution) {
     // 10000 means that the minimum precsion for greed_rate_ is 0.0001
     int randNumber = rand() % 10000;
     if (receiver_[requestor] != QUIT && lifetime_[requestor][receiver_[requestor]] != UNKNOWN &&
@@ -1452,8 +1463,13 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (match_[rightNode] != UNMATCHED) { receiver_[rightNode] = match_[rightNode]; }
     }
   }
+  auto enable_aggregation = getenv("ENABLE_AGGREGATION") == nullptr || atoi(getenv("ENABLE_AGGREGATION")) != 0;
   for (const int &rightNode : right_nodes_) {
-    if (receiver_[rightNode] == UNKNOWN || !Reachable(rightNode, receiver_[rightNode])) { receiver_[rightNode] = UNMATCHED; }
+    if (!enable_aggregation) {
+      receiver_[rightNode] = UNMATCHED;
+    } else if (receiver_[rightNode] == UNKNOWN || !Reachable(rightNode, receiver_[rightNode])) {
+      receiver_[rightNode] = UNMATCHED;
+    }
   }
   goto SendOrReschedule;
 }
@@ -1712,19 +1728,23 @@ bool Van::WaitForAskAsReceiverReply(int nodeID) {
   return status;
 }
 
-void Van::WaitForModelDistributionReply() {
+void Van::WaitForModelDistributionReply(int target) {
   std::unique_lock<std::mutex> locker{cv_mu_};
-  cv_.wait(locker, [this]() { return receive_model_distribution_reply_; });
-  receive_model_distribution_reply_ = false;
+  cv_.wait(locker, [this, target]() { return receive_model_distribution_reply_[target]; });
+  receive_model_distribution_reply_[target] = false;
 }
 
 int Van::GetModelReceiver(int lastBandwidth, int lastReceiver, int iteration) {
   AskModelReceiver(lastBandwidth, lastReceiver, iteration);
-  std::unique_lock<std::mutex> locker{cv_mu_};
-  cv_.wait(locker, [this]() { return model_receiver_ != UNKNOWN; });
-  int res = model_receiver_;
-  model_receiver_ = UNKNOWN;
-  return res;
+  if (lastBandwidth == ps::Van::UNKNOWN && lastReceiver == ps::Van::UNKNOWN) {
+    std::unique_lock<std::mutex> locker{cv_mu_};
+    cv_.wait(locker, [this]() { return !model_receiver_.empty(); });
+    int res = model_receiver_.front();
+    model_receiver_.pop();
+    PS_VLOG(0) << my_node_.id << " received model_receiver: " << res;
+    return res;
+  }
+  return ps::Van::IGNORED;
 }
 
 int Van::GetLocalAggregationReceiver() {
@@ -1829,8 +1849,14 @@ void Van::ProcessLocalAggregation(Message *msg) {
 }
 
 void Van::ProcessAskModelReceiverReply(Message *msg) {
+  auto r = msg->meta.model_receiver;
+  if (r == ps::Van::IGNORED) {
+    PS_VLOG(0) << my_node_.id << " received AskModelReceiverReply ignored";
+    return;
+  }
   std::lock_guard<std::mutex> locker{cv_mu_};
-  model_receiver_ = msg->meta.model_receiver;
+  model_receiver_.push(r);
+  PS_VLOG(0) << my_node_.id << " received AskModelReceiverReply: " << r << " model_receiver.size: " << model_receiver_.size();
   cv_.notify_all();
 }
 
@@ -1845,7 +1871,7 @@ void Van::ProcessModelDistribution(Message *msg) {
 
 void Van::ProcessModelDistributionReply(Message *msg) {
   std::lock_guard<std::mutex> locker{cv_mu_};
-  receive_model_distribution_reply_ = true;
+  receive_model_distribution_reply_[msg->meta.sender] = true;
   cv_.notify_all();
 }
 

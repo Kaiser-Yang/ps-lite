@@ -1115,8 +1115,6 @@ void KVWorker<Val>::PullFromReceiveKvs(int key,
 
 template <typename Val>
 void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kvs) {
-  int lastBandwidth = ps::Van::UNKNOWN;
-  int lastReceiver = ps::Van::UNKNOWN;
   int receiver = ps::Van::UNKNOWN;
   Message msg;
   msg.meta.app_id = 0;
@@ -1131,18 +1129,17 @@ void KVWorker<Val>::ModelDistribution(const Meta reqMeta, const KVPairs<Val>* kv
   msg.AddData(kvs->lens);
   delete kvs;
   while (true) {
-    receiver = Postoffice::Get()->van()->GetModelReceiver(lastBandwidth, lastReceiver, reqMeta.version);
+    receiver = Postoffice::Get()->van()->GetModelReceiver(ps::Van::UNKNOWN, ps::Van::UNKNOWN, reqMeta.version);
     if (receiver == ps::Van::QUIT) { break; }
     msg.meta.recver = receiver;
     // the origin codes are wrong,
     // because clock will not count the time when the process is sleeping
     auto starts = std::chrono::high_resolution_clock::now();
     Postoffice::Get()->van()->Send(msg);
-    Postoffice::Get()->van()->WaitForModelDistributionReply();
+    Postoffice::Get()->van()->WaitForModelDistributionReply(receiver);
     auto ends = std::chrono::high_resolution_clock::now();
     const std::chrono::duration<double> diff = starts - ends ;
-    lastBandwidth = int(diff.count() * 1000000);
-    lastReceiver = receiver;
+    ps::Postoffice::Get()->van()->GetModelReceiver(int(diff.count() * 1000000), receiver , reqMeta.version);
   }
 }
 

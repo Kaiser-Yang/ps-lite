@@ -48,6 +48,8 @@ class Van {
     UNKNOWN = -2,
     // The node can not find the receiver
     UNMATCHED = -3,
+    // Ignored
+    IGNORED = -4,
   };
 
   // The type of connection between nodes.
@@ -110,7 +112,7 @@ class Van {
 
   int GetLocalAggregationReceiver();
 
-  void WaitForModelDistributionReply();
+  void WaitForModelDistributionReply(int target);
 
   void WaitForLocalAggregationFinish();
 
@@ -299,7 +301,7 @@ class Van {
   // The node id which is the last node reply to the ASK_AS_RECEIVER message.
   int reply_node_id_ = UNKNOWN;
   // Whether the node has received the new model
-  bool receive_model_distribution_reply_ = false;
+  std::vector<bool> receive_model_distribution_reply_;
   // The expiration time of the bandwidth
   int bandwidthExpirationTime_ = UNKNOWN;
   // The same meaning with minimum_model_aggregation_num_, but this variable will not be changed once it is known.
@@ -315,7 +317,7 @@ class Van {
   // The connection type of the lemethod.
   int lemethod_connection_type_ = UNKNOWN;
   // The model receiver of the model distribution.
-  int model_receiver_ = UNKNOWN;
+  std::queue<int> model_receiver_;
   // The current version of the model.
   int iteration_ = 0;
   double greed_rate_;
