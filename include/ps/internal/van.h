@@ -181,6 +181,7 @@ class Van {
   std::condition_variable ver_cond;
   std::mutex sched;
   std::mutex sched1;
+  std::mutex r_ma_mu_;
   int receiver_ = -2;
   bool ver_flag = false;
   double max_greed_rate;
@@ -286,6 +287,7 @@ class Van {
 
   // Sliding window storing the last WINDOW_SIZE aggregation time costs (in milliseconds)
   std::deque<int> time_window_;
+  int r_ma_cnt_ = 0;
   // Exponentially weighted moving average of aggregation times (smoothed historical trend)
   double ema_time_ = -1.0;
   // Counter tracking the total number of recorded historical aggregation times
@@ -400,6 +402,8 @@ class Van {
   void CheckModelDistributionFinish();
 
   void CheckModelAggregationFinish();
+
+  void CheckRLimit(bool start);
 
   void Ask(int throughput, int last_recv_id, int version);
 

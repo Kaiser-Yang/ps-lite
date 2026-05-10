@@ -1164,14 +1164,8 @@ void Van::UpdateTimeStats(int current_time) {
 }
 
 void Van::CheckModelAggregationFinish() {
-  static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(), 
-    aggregation_end_time_ = std::chrono::high_resolution_clock::now();
-  if (num_ma_ == 0) {
-    aggregation_start_time_ = std::chrono::high_resolution_clock::now();
-  }
   num_ma_++;
   if (num_ma_ != Postoffice::Get()->num_workers()) { return; }
-  aggregation_end_time_ = std::chrono::high_resolution_clock::now();
   num_ma_ = 0;
   auto &unreceived_nodes_ = unreceived_nodes_ma_;
   auto &receiver_ = receiver_ma_;
@@ -1183,6 +1177,20 @@ void Van::CheckModelAggregationFinish() {
     receiver_[Postoffice::Get()->WorkerRankToID(i)] = UNKNOWN;
   }
   mman_cv_.notify_all();
+}
+
+void Van::CheckRLimit(bool start) {
+  std::unique_lock<std::mutex> locker{r_ma_mu_};
+  static auto aggregation_start_time_ = std::chrono::high_resolution_clock::now(),
+    aggregation_end_time_ = std::chrono::high_resolution_clock::now();
+  if (start) {
+    aggregation_start_time_ = std::chrono::high_resolution_clock::now();
+    return;
+  }
+  r_ma_cnt_++;
+  if (r_ma_cnt_ != Postoffice::Get()->num_workers()) { return; }
+  r_ma_cnt_ = 0;
+  aggregation_end_time_ = std::chrono::high_resolution_clock::now();
   const std::chrono::duration<double> diff = aggregation_end_time_ - aggregation_start_time_;
   const int current_time_cost = int(diff.count() * 1000);
   UpdateTimeStats(current_time_cost);
@@ -1348,6 +1356,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
+        if (receiving_nodes_.empty()) { CheckRLimit(true); }
         receiving_nodes_[receiver_[requestor]]++;
         PS_VLOG(0) << "AGGREGATION INFO:"
           << " requestor: " << requestor
@@ -1805,6 +1814,7 @@ void Van::ProcessAskAsReceiver(Message *msg) {
 }
 
 void Van::ProcessFinishReceivingLocalAggregation(Message msg) {
+  CheckRLimit(false);
   PS_VLOG(0) << "received FINISH_RECEIVING_LOCAL_AGGREGATION from " << msg.meta.sender;
   std::unique_lock<std::mutex> locker{mu_ma_};
   CHECK(receiving_nodes_.count(msg.meta.sender) > 0)
