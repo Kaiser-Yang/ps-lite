@@ -1356,7 +1356,7 @@ void Van::ProcessAskLocalAggregation(Message msg) {
       if (ok) {
         PS_VLOG(0) << "LOCAL AGGREGATION([sender][receiver]): " << requestor << " " << receiver_[requestor];
         rpl.meta.local_aggregation_receiver = receiver_[requestor];
-        if (receiving_nodes_.empty()) { CheckRLimit(true); }
+        if (r_ma_cnt_ == 0) { CheckRLimit(true); }
         receiving_nodes_[receiver_[requestor]]++;
         PS_VLOG(0) << "AGGREGATION INFO:"
           << " requestor: " << requestor
